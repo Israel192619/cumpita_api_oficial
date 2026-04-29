@@ -3,12 +3,12 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use App\Models\User;
-use Illuminate\Support\Facades\Hash;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Tymon\JWTAuth\Facades\JWTAuth;
+use Illuminate\Support\Facades\Hash;
 use Tymon\JWTAuth\Exceptions\JWTException;
+use Tymon\JWTAuth\Facades\JWTAuth;
 
 class AuthController extends Controller
 {
@@ -29,7 +29,7 @@ class AuthController extends Controller
         try {
             $token = JWTAuth::fromUser($user);
         } catch (JWTException $e) {
-            return response()->json(['error' => 'Could not create token'], 500);
+            return response()->json(['message' => 'Could not create token'], 500);
         }
 
         return response()->json([
@@ -44,10 +44,10 @@ class AuthController extends Controller
 
         try {
             if (!$token = JWTAuth::attempt($credentials)) {
-                return response()->json(['error' => 'Invalid credentials'], 401);
+                return response()->json(['message' => 'Credenciales Inválidas'], 401);
             }
         } catch (JWTException $e) {
-            return response()->json(['error' => 'Could not create token'], 500);
+            return response()->json(['message' => 'Could not create token'], 500);
         }
         /** @var \Tymon\JWTAuth\JWTGuard $auth */
         $auth = auth('api');
@@ -63,7 +63,7 @@ class AuthController extends Controller
         try {
             JWTAuth::invalidate(JWTAuth::getToken());
         } catch (JWTException $e) {
-            return response()->json(['error' => 'Failed to logout, please try again'], 500);
+            return response()->json(['message' => 'Failed to logout, please try again'], 500);
         }
 
         return response()->json(['message' => 'Successfully logged out']);
@@ -74,22 +74,21 @@ class AuthController extends Controller
         try {
             $user = Auth::user();
             if (!$user) {
-                return response()->json(['error' => 'User not found'], 404);
+                return response()->json(['message' => 'User not found'], 404);
             }
             return response()->json($user);
         } catch (JWTException $e) {
-            return response()->json(['error' => 'Failed to fetch user profile'], 500);
+            return response()->json(['message' => 'Failed to fetch user profile'], 500);
         }
     }
 
-    public function updateUser(Request $request)
-{
+    public function updateUser(Request $request){
     try {
         /** @var \App\Models\User $user */
         $user = Auth::user();
 
         if (!$user) {
-            return response()->json(['error' => 'User not found'], 404);
+            return response()->json(['message' => 'User not found'], 404);
         }
 
         $user->update($request->only(['name', 'email']));
@@ -97,7 +96,7 @@ class AuthController extends Controller
         return response()->json($user);
 
     } catch (JWTException $e) {
-        return response()->json(['error' => 'Failed to update user'], 500);
+        return response()->json(['message' => 'Failed to update user'], 500);
     }
 }
 }
