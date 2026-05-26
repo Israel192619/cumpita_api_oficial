@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\ReestablecerContrasenaController;
+use App\Http\Controllers\CategoriaController;
+use App\Http\Controllers\ModificadorController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -26,4 +28,6 @@ Route::middleware('jwt')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::apiResource('roles', RoleController::class);
     Route::apiResource('users', UserController::class);
+    Route::apiResource('categorias', CategoriaController::class);
+    Route::apiResource('modificadores', ModificadorController::class);
 });
