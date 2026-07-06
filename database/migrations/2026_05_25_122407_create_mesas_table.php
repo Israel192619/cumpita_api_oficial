@@ -11,12 +11,16 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('modificador_opciones', function (Blueprint $table) {
+        Schema::create('mesas', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('modificador_id')->constrained('modificadores')->onDelete('cascade');
-            $table->string('nombre');
-            $table->decimal('precio_extra', 10, 2)->default(0);
-            $table->boolean('activo')->default(true);
+            $table->string('numero')->unique();
+            $table->integer('capacidad');
+            $table->enum('estado', [
+                'libre',
+                'ocupada',
+                'reservada',
+                'mantenimiento'
+            ])->default('libre');
             $table->timestamps();
         });
     }
@@ -26,6 +30,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('modificador_opciones');
+        Schema::dropIfExists('mesas');
     }
 };

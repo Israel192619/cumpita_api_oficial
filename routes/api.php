@@ -3,7 +3,11 @@
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
+use App\Http\Controllers\ClienteController;
+use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
+use App\Http\Controllers\OrdenController;
+use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -30,4 +34,9 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('users', UserController::class);
     Route::apiResource('categorias', CategoriaController::class);
     Route::apiResource('modificadores', ModificadorController::class);
+    Route::apiResource('productos', ProductoController::class);
+    Route::apiResource('mesas', MesaController::class);
+    Route::get('clientes/search', [ClienteController::class, 'search']);
+    Route::apiResource('clientes', ClienteController::class);
+    Route::apiResource('ordenes', OrdenController::class);
 });

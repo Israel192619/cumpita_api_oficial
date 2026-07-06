@@ -11,12 +11,11 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('modificador_opciones', function (Blueprint $table) {
+        Schema::create('producto_opciones', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('modificador_id')->constrained('modificadores')->onDelete('cascade');
-            $table->string('nombre');
-            $table->decimal('precio_extra', 10, 2)->default(0);
-            $table->boolean('activo')->default(true);
+            $table->foreignId('producto_id')->constrained('productos')->onDelete('cascade');
+            $table->foreignId('modificador_opcion_id')->constrained('modificador_opciones')->onDelete('cascade');
+            $table->boolean('predeterminado')->default(false); 
             $table->timestamps();
         });
     }
@@ -26,6 +25,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('modificador_opciones');
+        Schema::dropIfExists('producto_opciones');
     }
 };

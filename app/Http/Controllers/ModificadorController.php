@@ -14,9 +14,11 @@ class ModificadorController extends Controller
      */
     public function index()
     {
-        $modificadores = Modificador::withCount('opciones')->latest()->get();
-        
-        return response()->json($modificadores, 200);
+        $modificadores = Modificador::withCount('opciones')->with('opciones')->latest()->get();
+        return response()->json([
+            'modificadores' => $modificadores,
+            'message' => 'Modificadores obtenidos exitosamente.'
+            ], 200);
     }
 
     /**
@@ -71,15 +73,18 @@ class ModificadorController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show(Modificador $modificador)
+    public function show(Modificador $modificadore)
     {
-        return response()->json($modificador->load('opciones'), 200);
+        return response()->json([
+            'modificador' => $modificadore->load('opciones'),
+            'message' => 'Modificador obtenido exitosamente.'
+        ], 200);
     }
 
     /**
      * Update the specified resource in storage.
      */
-    public function update(Request $request, Modificador $modificador)
+    public function update(Request $request, Modificador $modificadore)
     {
         $data = $request->validate([
             'nombre' => 'required|string|max:255',
@@ -96,9 +101,9 @@ class ModificadorController extends Controller
         ]);
 
         try {
-            DB::transaction(function () use ($data, $modificador) {
+            DB::transaction(function () use ($data, $modificadore) {
                 // 1. Actualizar el padre
-                $modificador->update([
+                $modificadore->update([
                     'nombre' => $data['nombre'],
                     'tipo' => $data['tipo'],
                     'requerido' => $data['requerido'],
@@ -116,19 +121,19 @@ class ModificadorController extends Controller
                         $opcionesIdsEnviadas[] = $opcionExistente->id;
                     } else {
                         // SI NO TIENE ID: Es una opción nueva añadida en Angular
-                        $nuevaOpcion = $modificador->opciones()->create($opcionData);
+                        $nuevaOpcion = $modificadore->opciones()->create($opcionData);
                         $opcionesIdsEnviadas[] = $nuevaOpcion->id;
                     }
                 }
 
                 // 3. LIMPIEZA AUTOMÁTICA: Borra de la BD las opciones que el usuario eliminó en Angular
-                $modificador->opciones()->whereNotIn('id', $opcionesIdsEnviadas)->delete();
+                $modificadore->opciones()->whereNotIn('id', $opcionesIdsEnviadas)->delete();
             });
 
             return response()->json([
                 'success' => true,
                 'message' => 'Modificador y opciones actualizados correctamente.',
-                'data' => $modificador->load('opciones')
+                'data' => $modificadore->load('opciones')
             ], 200);
 
         } catch (\Exception $e) {
@@ -143,10 +148,10 @@ class ModificadorController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Modificador $modificador)
+    public function destroy(Modificador $modificadore)
     {
         try {
-            $modificador->delete();
+            $modificadore->delete();
             
             return response()->json([
                 'success' => true,
