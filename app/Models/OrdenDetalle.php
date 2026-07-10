@@ -12,12 +12,14 @@ class OrdenDetalle extends Model
         'orden_id',
         'producto_id',
         'cantidad',
-        'precio_unitario'
+        'precio_unitario',
+        'nota'
     ];
 
     protected $casts = [
         'cantidad' => 'integer',
         'precio_unitario' => 'decimal:2',
+        'nota' => 'string',
     ];
 
     /**

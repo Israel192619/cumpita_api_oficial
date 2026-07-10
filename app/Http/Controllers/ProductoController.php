@@ -218,6 +218,22 @@ class ProductoController extends Controller
             'message' => 'Producto eliminado correctamente'
         ]);
     }
+
+    public function ajustarStock(Request $request, Producto $producto)
+    {
+        $data = $request->validate([
+            'cantidad' => 'required|integer|min:1',
+        ]);
+
+        $producto->stock = max(0, (int) $producto->stock + (int) $data['cantidad']);
+        $producto->save();
+
+        return response()->json([
+            'message' => 'Stock actualizado correctamente',
+            'producto' => $producto->fresh()
+        ]);
+    }
+
     private function validarProducto(Request $request)
     {
         return $request->validate([

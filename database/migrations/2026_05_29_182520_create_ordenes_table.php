@@ -22,7 +22,7 @@ return new class extends Migration
             $table->foreignId('mesa_id')
                 ->constrained()
                 ->cascadeOnDelete();
-            $table->string('fecha_orden');
+            $table->dateTime('fecha_orden')->nullable();
             $table->enum('tipo_orden', ['dine-in', 'to-go', 'delivery'])->default('dine-in');
             $table->decimal('subtotal', 10, 2)->default(0);
             $table->decimal('descuento', 10, 2)->default(0);
@@ -38,6 +38,7 @@ return new class extends Migration
             $table->enum('metodo_pago', [
                 'efectivo',
                 'qr',
+                'tarjeta',
             ])->nullable();
             $table->text('observaciones')->nullable();
             $table->timestamps();

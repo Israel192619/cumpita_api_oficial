@@ -13,9 +13,12 @@ class CategoriaSeeder extends Seeder
     public function run(): void
     {
         $categorias = [
+            ['nombre' => 'Platillos principales', 'descripcion' => 'Platillos deliciosas', 'parent_id' => null],
             ['nombre' => 'Bebidas', 'descripcion' => 'Bebidas refrescantes', 'parent_id' => null],
-            ['nombre' => 'Gaseosas', 'descripcion' => 'Gaseoasas refrescantes', 'parent_id' => 1],
-            ['nombre' => 'Comidas', 'descripcion' => 'Comidas deliciosas', 'parent_id' => null],
+            ['nombre' => 'Hervidos', 'descripcion' => 'Bebidas refrescantes', 'parent_id' => 2],
+            ['nombre' => 'Gaseosas', 'descripcion' => 'Gaseoasas refrescantes', 'parent_id' => 2],
+            ['nombre' => 'Pescados', 'descripcion' => 'Pescados a la parrilla', 'parent_id' => 1],
+            ['nombre' => 'Pollos', 'descripcion' => 'Pollos a la parrilla', 'parent_id' => 1],
             ['nombre' => 'Postres', 'descripcion' => 'Postres deliciosos', 'parent_id' => null],
         ];
 

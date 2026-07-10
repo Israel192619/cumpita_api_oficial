@@ -31,10 +31,11 @@ class OrdenController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'cliente_id' => 'nullable|exists:clientes,id',
-            // 'cliente_nombre' => 'nullable|string|max:255',
-            // 'cliente_telefono' => 'nullable|string|max:20',
+            'cliente_nombre' => 'nullable|string|max:255',
+            'cliente_telefono' => 'nullable|string|max:50',
             'mesa_id' => 'nullable|exists:mesas,id',
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
+            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i',
             'subtotal' => 'required|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
@@ -44,6 +45,7 @@ class OrdenController extends Controller
             'items.*.producto_id' => 'required|exists:productos,id',
             'items.*.cantidad' => 'required|integer|min:1',
             'items.*.precio_unitario' => 'required|numeric|min:0',
+            'items.*.nota' => 'nullable|string|max:255',
             'items.*.modificadores' => 'nullable|array',
             'items.*.modificadores.*.modificador_opcion_id' => 'required_with:items.*.modificadores|exists:modificador_opciones,id',
             'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
@@ -51,6 +53,10 @@ class OrdenController extends Controller
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        if (!$request->cliente_id && !$request->cliente_nombre) {
+            return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
         }
 
         DB::beginTransaction();
@@ -79,7 +85,7 @@ class OrdenController extends Controller
                 'user_id' => $userActual->id,
                 'cliente_id' => $clienteId,
                 'mesa_id' => $request->mesa_id,
-                'fecha_orden' => now()->toDateTimeString(),
+                'fecha_orden' => $request->filled('fecha_orden') ? $request->fecha_orden : null,
                 'subtotal' => $request->subtotal,
                 'descuento' => $request->descuento ?? 0,
                 'total' => $request->total,
@@ -91,11 +97,27 @@ class OrdenController extends Controller
 
             // Crear detalles de la orden (items del carrito)
             foreach ($request->items as $item) {
+                $producto = \App\Models\Producto::findOrFail($item['producto_id']);
+
+                if ($producto->maneja_stock && $producto->stock !== null) {
+                    $cantidadSolicitada = (int) $item['cantidad'];
+                    if ((int) $producto->stock < $cantidadSolicitada) {
+                        DB::rollBack();
+                        return response()->json([
+                            'message' => 'No hay suficiente stock para el producto ' . $producto->nombre . '.'
+                        ], 422);
+                    }
+
+                    $producto->stock = max(0, (int) $producto->stock - $cantidadSolicitada);
+                    $producto->save();
+                }
+
                 $ordenDetalle = OrdenDetalle::create([
                     'orden_id' => $orden->id,
                     'producto_id' => $item['producto_id'],
                     'cantidad' => $item['cantidad'],
                     'precio_unitario' => $item['precio_unitario'],
+                    'nota' => $item['nota'] ?? null,
                 ]);
 
                 // Crear opciones del detalle (modificadores)
@@ -147,9 +169,26 @@ class OrdenController extends Controller
     public function update(Request $request, string $id)
     {
         $validator = Validator::make($request->all(), [
+            'cliente_id' => 'nullable|exists:clientes,id',
+            'cliente_nombre' => 'nullable|string|max:255',
+            'cliente_telefono' => 'nullable|string|max:50',
+            'mesa_id' => 'nullable|exists:mesas,id',
+            'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
+            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i',
+            'subtotal' => 'nullable|numeric|min:0',
+            'descuento' => 'nullable|numeric|min:0',
+            'total' => 'nullable|numeric|min:0',
             'estado' => 'nullable|in:pendiente,preparando,listo,entregado,pagado,cancelado',
             'metodo_pago' => 'nullable|in:efectivo,qr,tarjeta',
             'observaciones' => 'nullable|string',
+            'items' => 'nullable|array|min:1',
+            'items.*.producto_id' => 'required_with:items|exists:productos,id',
+            'items.*.cantidad' => 'required_with:items|integer|min:1',
+            'items.*.precio_unitario' => 'required_with:items|numeric|min:0',
+            'items.*.nota' => 'nullable|string|max:255',
+            'items.*.modificadores' => 'nullable|array',
+            'items.*.modificadores.*.modificador_opcion_id' => 'required_with:items.*.modificadores|exists:modificador_opciones,id',
+            'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
         ]);
 
         if ($validator->fails()) {
@@ -161,12 +200,39 @@ class OrdenController extends Controller
         try {
             $orden = Orden::findOrFail($id);
 
-            if (!$orden) {
-                return response()->json(['message' => 'Orden no encontrada'], 404);
+            $clienteId = $orden->cliente_id;
+            if ($request->has('cliente_id')) {
+                $clienteId = $request->cliente_id;
+            } elseif ($request->filled('cliente_nombre')) {
+                $cliente = Cliente::firstOrCreate(
+                    ['nombre' => $request->cliente_nombre],
+                    ['telefono' => $request->cliente_telefono]
+                );
+                $clienteId = $cliente->id;
             }
 
-            // Actualizar solo los campos permitidos
             $updateData = [];
+            if ($request->has('cliente_id') || $request->filled('cliente_nombre')) {
+                $updateData['cliente_id'] = $clienteId;
+            }
+            if ($request->has('mesa_id')) {
+                $updateData['mesa_id'] = $request->mesa_id;
+            }
+            if ($request->has('tipo_orden')) {
+                $updateData['tipo_orden'] = $request->tipo_orden;
+            }
+            if ($request->has('fecha_orden')) {
+                $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
+            }
+            if ($request->has('subtotal')) {
+                $updateData['subtotal'] = $request->subtotal;
+            }
+            if ($request->has('descuento')) {
+                $updateData['descuento'] = $request->descuento ?? 0;
+            }
+            if ($request->has('total')) {
+                $updateData['total'] = $request->total;
+            }
             if ($request->has('estado')) {
                 $updateData['estado'] = $request->estado;
             }
@@ -181,6 +247,10 @@ class OrdenController extends Controller
                 $orden->update($updateData);
             }
 
+            if ($request->has('items')) {
+                $this->syncOrderItems($orden, $request->items);
+            }
+
             DB::commit();
 
             return response()->json([
@@ -189,10 +259,66 @@ class OrdenController extends Controller
             ], 200);
         } catch (\Exception $e) {
             DB::rollBack();
+
+            if (str_contains($e->getMessage(), 'No hay suficiente stock')) {
+                return response()->json([
+                    'message' => $e->getMessage()
+                ], 422);
+            }
+
             return response()->json([
                 'message' => 'Error al actualizar la orden',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    private function syncOrderItems(Orden $orden, array $items): void
+    {
+        foreach ($orden->detalles as $detalle) {
+            $producto = \App\Models\Producto::find($detalle->producto_id);
+            if ($producto && $producto->maneja_stock && $producto->stock !== null) {
+                $producto->stock = (int) $producto->stock + (int) $detalle->cantidad;
+                $producto->save();
+            }
+        }
+
+        $orden->detalles()->get()->each(function (OrdenDetalle $detalle) {
+            $detalle->opciones()->delete();
+        });
+
+        $orden->detalles()->delete();
+
+        foreach ($items as $item) {
+            $producto = \App\Models\Producto::findOrFail($item['producto_id']);
+            $cantidadSolicitada = (int) ($item['cantidad'] ?? 1);
+
+            if ($producto->maneja_stock && $producto->stock !== null) {
+                if ((int) $producto->stock < $cantidadSolicitada) {
+                    throw new \RuntimeException('No hay suficiente stock para el producto ' . $producto->nombre . '.');
+                }
+
+                $producto->stock = max(0, (int) $producto->stock - $cantidadSolicitada);
+                $producto->save();
+            }
+
+            $ordenDetalle = OrdenDetalle::create([
+                'orden_id' => $orden->id,
+                'producto_id' => $item['producto_id'],
+                'cantidad' => $item['cantidad'],
+                'precio_unitario' => $item['precio_unitario'],
+                'nota' => $item['nota'] ?? null,
+            ]);
+
+            if (isset($item['modificadores']) && is_array($item['modificadores'])) {
+                foreach ($item['modificadores'] as $modificador) {
+                    OrdenDetalleOpcion::create([
+                        'orden_detalle_id' => $ordenDetalle->id,
+                        'modificador_opcion_id' => $modificador['modificador_opcion_id'],
+                        'precio_extra' => $modificador['precio_extra'] ?? 0,
+                    ]);
+                }
+            }
         }
     }
 
@@ -208,6 +334,14 @@ class OrdenController extends Controller
 
             if (!$orden) {
                 return response()->json(['message' => 'Orden no encontrada'], 404);
+            }
+
+            foreach ($orden->detalles as $detalle) {
+                $producto = \App\Models\Producto::find($detalle->producto_id);
+                if ($producto && $producto->maneja_stock && $producto->stock !== null) {
+                    $producto->stock = (int) $producto->stock + (int) $detalle->cantidad;
+                    $producto->save();
+                }
             }
 
             $orden->delete();

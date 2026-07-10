@@ -34,6 +34,7 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('users', UserController::class);
     Route::apiResource('categorias', CategoriaController::class);
     Route::apiResource('modificadores', ModificadorController::class);
+    Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
     Route::apiResource('productos', ProductoController::class);
     Route::apiResource('mesas', MesaController::class);
     Route::get('clientes/search', [ClienteController::class, 'search']);

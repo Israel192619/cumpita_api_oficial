@@ -22,6 +22,7 @@ class Orden extends Model
     ];
 
     protected $casts = [
+        'fecha_orden' => 'datetime',
         'subtotal' => 'decimal:2',
         'descuento' => 'decimal:2',
         'total' => 'decimal:2',

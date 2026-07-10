@@ -20,6 +20,7 @@ return new class extends Migration
             $table->foreignId('producto_id')
                 ->constrained()
                 ->cascadeOnDelete();
+            $table->string('nota')->nullable();
             $table->timestamps();
         });
     }
