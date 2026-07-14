@@ -66,6 +66,14 @@ class Orden extends Model
     }
 
     /**
+     * Relación con Pagos de Orden
+     */
+    public function pagos()
+    {
+        return $this->hasMany(PagoOrden::class, 'id_orden');
+    }
+
+    /**
      * Accesores para datos del cliente
      */
     public function getClienteNombreAttribute()

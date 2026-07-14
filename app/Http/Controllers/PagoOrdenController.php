@@ -12,9 +12,15 @@ class PagoOrdenController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $pagos = PagoOrden::with('orden')->orderBy('fecha_pago', 'desc')->get();
+        $query = PagoOrden::with('orden');
+        
+        if ($request->has('id_orden')) {
+            $query->where('id_orden', $request->input('id_orden'));
+        }
+        
+        $pagos = $query->orderBy('fecha_pago', 'desc')->get();
         return response()->json($pagos, 200);
     }
 
@@ -24,28 +30,28 @@ class PagoOrdenController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-        'id_orden'     => 'required|exists:ordenes,id_orden',
-        'monto_recibido' => 'required|numeric|min:0.01',
-        'metodo_pago'  => 'required|string', // ej: 'tarjeta_pos', 'efectivo'
-        'tipo_pago'    => 'required|in:reserva,saldo,total',
+            // CORREGIDO: Se cambia id_orden por id en la tabla ordenes
+            'id_orden'       => 'required|exists:ordenes,id',
+            'monto_recibido' => 'required|numeric|min:0.01',
+            'metodo_pago'    => 'required|string', 
+            'tipo_pago'      => 'required|in:reserva,saldo,total',
         ]);
 
         return DB::transaction(function () use ($request) {
             $orden = Orden::lockForUpdate()->findOrFail($request->id_orden);
 
-            $pagosAnteriores = PagoOrden::where('id_orden', $orden->id_orden)->sum('monto_pagado');
-            $saldoActual = (float)$orden->total_orden - (float)$pagosAnteriores;
+            // CORREGIDO: Se usa $orden->id en lugar de id_orden
+            $pagosAnteriores = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
+            $saldoActual = (float)$orden->total - (float)$pagosAnteriores;
             
             $montoRecibido = (float)$request->monto_recibido;
 
             // 1. Determinar cuánto se va a abonar realmente a la deuda
-            // Si paga con más de lo que debe, el abono real es solo el saldo pendiente
             $montoAbonado = ($montoRecibido > $saldoActual) ? $saldoActual : $montoRecibido;
 
             // 2. Calcular el cambio/vuelto devuelto
             $cambioDevuelto = 0.00;
             if ($montoRecibido > $saldoActual) {
-                // Solo permitimos vuelto si el método es efectivo
                 if ($request->metodo_pago === 'efectivo') {
                     $cambioDevuelto = $montoRecibido - $saldoActual;
                 } else {
@@ -55,11 +61,11 @@ class PagoOrdenController extends Controller
                 }
             }
 
-            // 3. Registrar el pago con todo el desglose para la auditoría de caja
+            // 3. Registrar el pago
             $pago = PagoOrden::create([
-                'id_orden'        => $request->id_orden,
+                'id_orden'        => $request->id_orden, // El request sigue trayendo el dato correctamente
                 'monto_recibido'  => $montoRecibido,
-                'monto_pagado'    => $montoAbonado, // Esto es lo que resta a la deuda
+                'monto_pagado'    => $montoAbonado, 
                 'cambio_devuelto' => $cambioDevuelto,
                 'metodo_pago'     => $request->metodo_pago,
                 'tipo_pago'       => $request->tipo_pago,
@@ -69,9 +75,9 @@ class PagoOrdenController extends Controller
             // 4. Actualizar estado de la orden
             $saldoFinal = $saldoActual - $montoAbonado;
             if ($saldoFinal <= 0) {
-                $orden->estado_orden = 'pagado';
+                $orden->estado = 'pagado';
             } else {
-                $orden->estado_orden = 'reservado';
+                $orden->estado = 'reservado';
             }
             $orden->save();
 
@@ -81,10 +87,11 @@ class PagoOrdenController extends Controller
                 'monto_abonado'   => $montoAbonado,
                 'cambio_devuelto' => round($cambioDevuelto, 2),
                 'saldo_pendiente' => round($saldoFinal, 2),
-                'estado_orden'    => $orden->estado_orden
+                'estado_orden' => $orden->estado
             ], 201);
         });
     }
+
 
     /**
      * Display the specified resource.

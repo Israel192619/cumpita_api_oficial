@@ -7,6 +7,7 @@ use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
 use App\Http\Controllers\OrdenController;
+use App\Http\Controllers\PagoOrdenController;
 use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\UserController;
@@ -40,4 +41,5 @@ Route::middleware('jwt')->group(function () {
     Route::get('clientes/search', [ClienteController::class, 'search']);
     Route::apiResource('clientes', ClienteController::class);
     Route::apiResource('ordenes', OrdenController::class);
+    Route::apiResource('pagos-ordenes', PagoOrdenController::class);
 });
