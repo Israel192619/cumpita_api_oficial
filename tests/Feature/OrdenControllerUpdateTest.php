@@ -52,7 +52,6 @@ class OrdenControllerUpdateTest extends TestCase
             'descuento' => 0,
             'total' => 10000,
             'estado' => 'pendiente',
-            'metodo_pago' => 'efectivo',
             'observaciones' => 'Original',
             'tipo_orden' => 'dine-in',
         ]);
@@ -68,7 +67,6 @@ class OrdenControllerUpdateTest extends TestCase
             'descuento' => 2000,
             'total' => 22000,
             'estado' => 'preparando',
-            'metodo_pago' => 'tarjeta',
             'observaciones' => 'Actualizada',
             'items' => [
                 [
@@ -86,7 +84,7 @@ class OrdenControllerUpdateTest extends TestCase
         $response->assertStatus(200);
         $response->assertJsonPath('orden.observaciones', 'Actualizada');
         $response->assertJsonPath('orden.tipo_orden', 'delivery');
-        $response->assertJsonPath('orden.metodo_pago', 'tarjeta');
+        $response->assertJsonPath('orden.estado_pago', 'pendiente');
 
         $this->assertDatabaseHas('ordenes', [
             'id' => $orden->id,

@@ -18,7 +18,7 @@ return new class extends Migration
             $table->decimal('monto_pagado', 10, 2);   // Lo que realmente se abonó a la cuenta (ej: 15.00)
             $table->decimal('cambio_devuelto', 10, 2)->default(0.00); // El vuelto (ej: 5.00)
             $table->string('metodo_pago'); 
-            $table->string('tipo_pago'); 
+            $table->enum('tipo_pago', ['pago','devolucion'])->default('pago'); // Tipo de pago
             $table->timestamp('fecha_pago')->useCurrent();
             $table->timestamps();
         });

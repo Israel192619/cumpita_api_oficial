@@ -28,18 +28,13 @@ return new class extends Migration
             $table->decimal('descuento', 10, 2)->default(0);
             $table->decimal('total', 10, 2)->default(0);
             $table->enum('estado', [
-                'pendiente',   // creada
-                'preparando',  // cocina
-                'listo',       // listo para servir
-                'entregado',   // entregado al cliente
-                'pagado',      // cobrado
+                'pendiente',
+                'preparando',
+                'listo',
+                'entregado',
                 'cancelado'
             ])->default('pendiente');
-            $table->enum('metodo_pago', [
-                'efectivo',
-                'qr',
-                'tarjeta',
-            ])->nullable();
+            $table->enum('estado_pago', ['pendiente', 'parcial', 'completado'])->default('pendiente'); // Estado del pago
             $table->text('observaciones')->nullable();
             $table->timestamps();
         });

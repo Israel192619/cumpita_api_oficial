@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
+use App\Models\PagoOrden;
 use App\Models\Cliente;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +18,7 @@ class OrdenController extends Controller
      */
     public function index()
     {
-        $ordenes = Orden::with('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->get();
+        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->get();
         return response()->json([
             'ordenes' => $ordenes
         ], 200);
@@ -39,7 +40,6 @@ class OrdenController extends Controller
             'subtotal' => 'required|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
-            'metodo_pago' => 'required|in:efectivo,qr,tarjeta',
             'observaciones' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.producto_id' => 'required|exists:productos,id',
@@ -90,7 +90,6 @@ class OrdenController extends Controller
                 'descuento' => $request->descuento ?? 0,
                 'total' => $request->total,
                 'estado' => 'pendiente',
-                'metodo_pago' => $request->metodo_pago,
                 'observaciones' => $request->observaciones,
                 'tipo_orden' => $request->tipo_orden ?? 'dine-in',
             ]);
@@ -152,7 +151,7 @@ class OrdenController extends Controller
      */
     public function show(string $id)
     {
-        $orden = Orden::with('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
+        $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
         
         if (!$orden) {
             return response()->json(['message' => 'Orden no encontrada'], 404);
@@ -174,12 +173,12 @@ class OrdenController extends Controller
             'cliente_telefono' => 'nullable|string|max:50',
             'mesa_id' => 'nullable|exists:mesas,id',
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
-            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i',
+            // 'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
+            'fecha_orden' => 'nullable|date',
             'subtotal' => 'nullable|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'nullable|numeric|min:0',
-            'estado' => 'nullable|in:pendiente,preparando,listo,entregado,pagado,cancelado',
-            'metodo_pago' => 'nullable|in:efectivo,qr,tarjeta',
+            'estado' => 'nullable|in:pendiente,preparando,listo,entregado,cancelado',
             'observaciones' => 'nullable|string',
             'items' => 'nullable|array|min:1',
             'items.*.producto_id' => 'required_with:items|exists:productos,id',
@@ -236,9 +235,6 @@ class OrdenController extends Controller
             if ($request->has('estado')) {
                 $updateData['estado'] = $request->estado;
             }
-            if ($request->has('metodo_pago')) {
-                $updateData['metodo_pago'] = $request->metodo_pago;
-            }
             if ($request->has('observaciones')) {
                 $updateData['observaciones'] = $request->observaciones;
             }
@@ -250,6 +246,12 @@ class OrdenController extends Controller
             if ($request->has('items')) {
                 $this->syncOrderItems($orden, $request->items);
             }
+
+            $pagosTotales = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
+            $orden->estado_pago = $pagosTotales <= 0
+                ? 'pendiente'
+                : ($pagosTotales < (float) $orden->total ? 'parcial' : 'completado');
+            $orden->save();
 
             DB::commit();
 

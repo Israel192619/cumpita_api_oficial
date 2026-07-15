@@ -16,7 +16,7 @@ class Orden extends Model
         'descuento',
         'total',
         'estado',
-        'metodo_pago',
+        'estado_pago',
         'observaciones',
         'tipo_orden'
     ];
@@ -27,11 +27,11 @@ class Orden extends Model
         'descuento' => 'decimal:2',
         'total' => 'decimal:2',
         'estado' => 'string',
-        'metodo_pago' => 'string',
+        'estado_pago' => 'string',
         'tipo_orden' => 'string',
     ];
 
-    protected $appends = ['cliente_nombre', 'cliente_telefono'];
+    protected $appends = ['cliente_nombre', 'cliente_telefono', 'saldo_pendiente'];
 
     /**
      * Relación con Usuario
@@ -84,6 +84,16 @@ class Orden extends Model
     public function getClienteTelefonoAttribute()
     {
         return $this->cliente?->telefono;
+    }
+
+    public function getSaldoPendienteAttribute()
+    {
+        $pagos = $this->relationLoaded('pagos') ? $this->pagos : $this->pagos()->get();
+        $pagosTotales = $pagos->sum(function ($pago) {
+            return (float) ($pago->monto_pagado ?? 0);
+        });
+
+        return max(0, (float) $this->total - $pagosTotales);
     }
 }
 
