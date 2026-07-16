@@ -35,6 +35,8 @@ class PagoOrdenController extends Controller
             'monto_recibido' => 'required|numeric|min:0.01',
             'metodo_pago'    => 'required|in:efectivo,qr',
             'tipo_pago'      => 'required|in:pago,devolucion',
+            'monto_pagado'   => 'nullable|numeric',
+            'cambio_devuelto' => 'nullable|numeric',
         ]);
 
         return DB::transaction(function () use ($request) {
@@ -57,22 +59,31 @@ class PagoOrdenController extends Controller
                     ], 422);
                 }
 
-                // Interpretamos $montoRecibido como la cantidad en efectivo que el cajero entrega al cliente
-                // Ej: debe devolverse 45 pero el cajero entrega 50 por falta de cambio.
-                // Guardamos:
-                // - 'monto_recibido' => negativo del efectivo entregado (ej -50)
-                // - 'monto_pagado' => negativo del monto aplicado a la devolución (ej -45)
-                // - 'cambio_devuelto' => negativo del excedente entregado al cliente (ej -5)
+                // Si el frontend proporciona monto_pagado y cambio_devuelto, usarlos
+                // De lo contrario, calcularlos
+                if ($request->has('monto_pagado') && $request->has('cambio_devuelto')) {
+                    $montoPagado = -(float) $request->monto_pagado;
+                    $cambioDevuelto = -(float) $request->cambio_devuelto;
+                    $montoRecibidoNegativo = -$montoRecibido;
+                } else {
+                    // Interpretamos $montoRecibido como la cantidad en efectivo que el cajero entrega al cliente
+                    // Ej: debe devolverse 45 pero el cajero entrega 50 por falta de cambio.
+                    // Guardamos:
+                    // - 'monto_recibido' => negativo del efectivo entregado (ej -50)
+                    // - 'monto_pagado' => negativo del monto aplicado a la devolución (ej -45)
+                    // - 'cambio_devuelto' => negativo del excedente entregado al cliente (ej -5)
 
-                $montoEntregado = $montoRecibido; // positivo tal como viene del frontend
-                $montoAplicado = min($montoEntregado, $montoDevolucionMaxima);
-                $excedente = max(0, $montoEntregado - $montoAplicado);
+                    $montoEntregado = $montoRecibido; // positivo tal como viene del frontend
+                    $montoAplicado = min($montoEntregado, $montoDevolucionMaxima);
+                    $excedente = max(0, $montoEntregado - $montoAplicado);
 
-                $montoAbonado = -$montoAplicado; // lo que se resta de lo abonado al pedido
-                $cambioDevuelto = $excedente > 0 ? -$excedente : 0;
+                    $montoPagado = -$montoAplicado; // lo que se resta de lo abonado al pedido
+                    $cambioDevuelto = $excedente > 0 ? -$excedente : 0;
+                    $montoRecibidoNegativo = -$montoEntregado;
+                }
 
-                // Guardaremos monto_recibido como negativo para indicar salida de caja
-                $montoRecibido = -$montoEntregado;
+                $montoRecibido = $montoRecibidoNegativo;
+                $montoAbonado = $montoPagado;
             } else {
                 if ($saldoActual <= 0) {
                     return response()->json([
@@ -80,22 +91,10 @@ class PagoOrdenController extends Controller
                     ], 422);
                 }
 
-                // if ($request->metodo_pago === 'qr' && $montoRecibido < $saldoActual) {
-                //     return response()->json([
-                //         'error' => 'El pago por QR debe cubrir el total pendiente.'
-                //     ], 422);
-                // }
-
                 $montoAbonado = min($montoRecibido, $saldoActual);
                 $cambioDevuelto = 0;
 
                 if ($montoRecibido > $saldoActual) {
-                    // if ($request->metodo_pago !== 'efectivo') {
-                    //     return response()->json([
-                    //         'error' => 'Solo se puede devolver cambio en pagos en efectivo.'
-                    //     ], 422);
-                    // }
-
                     $cambioDevuelto = $montoRecibido - $saldoActual;
                 }
             }
