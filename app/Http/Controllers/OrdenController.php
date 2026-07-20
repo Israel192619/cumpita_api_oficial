@@ -36,7 +36,8 @@ class OrdenController extends Controller
             'cliente_telefono' => 'nullable|string|max:50',
             'mesa_id' => 'nullable|exists:mesas,id',
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
-            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i',
+            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
+            'fecha_reserva' => 'nullable|date_format:Y-m-d\TH:i:s',
             'subtotal' => 'required|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
@@ -86,6 +87,7 @@ class OrdenController extends Controller
                 'cliente_id' => $clienteId,
                 'mesa_id' => $request->mesa_id,
                 'fecha_orden' => $request->filled('fecha_orden') ? $request->fecha_orden : null,
+                'fecha_reserva' => $request->filled('fecha_reserva') ? $request->fecha_reserva : null,
                 'subtotal' => $request->subtotal,
                 'descuento' => $request->descuento ?? 0,
                 'total' => $request->total,
@@ -174,7 +176,8 @@ class OrdenController extends Controller
             'mesa_id' => 'nullable|exists:mesas,id',
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
             // 'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
-            'fecha_orden' => 'nullable|date',
+            'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
+            'fecha_reserva' => 'nullable|date_format:Y-m-d\TH:i:s',
             'subtotal' => 'nullable|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'nullable|numeric|min:0',
@@ -222,6 +225,9 @@ class OrdenController extends Controller
             }
             if ($request->has('fecha_orden')) {
                 $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
+            }
+            if ($request->has('fecha_reserva')) {
+                $updateData['fecha_reserva'] = $request->filled('fecha_reserva') ? $request->fecha_reserva : null;
             }
             if ($request->has('subtotal')) {
                 $updateData['subtotal'] = $request->subtotal;

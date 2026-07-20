@@ -23,6 +23,7 @@ return new class extends Migration
                 ->constrained()
                 ->cascadeOnDelete();
             $table->dateTime('fecha_orden')->nullable();
+            $table->dateTime('fecha_reserva')->nullable();
             $table->enum('tipo_orden', ['dine-in', 'to-go', 'delivery'])->default('dine-in');
             $table->decimal('subtotal', 10, 2)->default(0);
             $table->decimal('descuento', 10, 2)->default(0);

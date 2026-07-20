@@ -12,6 +12,7 @@ class Orden extends Model
         'cliente_id',
         'mesa_id',
         'fecha_orden',
+        'fecha_reserva',
         'subtotal',
         'descuento',
         'total',
@@ -23,6 +24,7 @@ class Orden extends Model
 
     protected $casts = [
         'fecha_orden' => 'datetime',
+        'fecha_reserva' => 'datetime',
         'subtotal' => 'decimal:2',
         'descuento' => 'decimal:2',
         'total' => 'decimal:2',
