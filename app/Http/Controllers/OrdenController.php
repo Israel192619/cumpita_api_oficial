@@ -3,11 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Events\OrdenCreadaEvent;
+use App\Events\OrdenCocinaActualizadaEvent;
+use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
 use App\Models\PagoOrden;
 use App\Models\Cliente;
+use App\Models\Producto;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -203,6 +206,7 @@ class OrdenController extends Controller
             'observaciones' => 'nullable|string',
             'items' => 'nullable|array|min:1',
             'items.*.producto_id' => 'required_with:items|exists:productos,id',
+            'items.*.orden_detalle_id' => 'nullable|integer',
             'items.*.cantidad' => 'required_with:items|integer|min:1',
             'items.*.precio_unitario' => 'required_with:items|numeric|min:0',
             'items.*.nota' => 'nullable|string|max:255',
@@ -215,77 +219,92 @@ class OrdenController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        DB::beginTransaction();
-
         try {
-            $orden = Orden::findOrFail($id);
+            $historialIds = [];
+            $ordenActualizada = DB::transaction(function () use ($request, $id, &$historialIds) {
+                $orden = Orden::lockForUpdate()->findOrFail($id);
+                $usuarioId = auth('api')->id();
+                $estadoAnterior = $orden->estado;
 
-            $clienteId = $orden->cliente_id;
-            if ($request->has('cliente_id')) {
-                $clienteId = $request->cliente_id;
-            } elseif ($request->filled('cliente_nombre')) {
-                $cliente = Cliente::firstOrCreate(
-                    ['nombre' => $request->cliente_nombre],
-                    ['telefono' => $request->cliente_telefono]
-                );
-                $clienteId = $cliente->id;
-            }
+                $clienteId = $orden->cliente_id;
+                if ($request->has('cliente_id')) {
+                    $clienteId = $request->cliente_id;
+                } elseif ($request->filled('cliente_nombre')) {
+                    $cliente = Cliente::firstOrCreate(
+                        ['nombre' => $request->cliente_nombre],
+                        ['telefono' => $request->cliente_telefono]
+                    );
+                    $clienteId = $cliente->id;
+                }
 
-            $updateData = [];
-            if ($request->has('cliente_id') || $request->filled('cliente_nombre')) {
-                $updateData['cliente_id'] = $clienteId;
-            }
-            if ($request->has('mesa_id')) {
-                $updateData['mesa_id'] = $request->mesa_id;
-            }
-            if ($request->has('tipo_orden')) {
-                $updateData['tipo_orden'] = $request->tipo_orden;
-            }
-            if ($request->has('fecha_orden')) {
-                $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
-            }
-            if ($request->has('fecha_reserva')) {
-                $updateData['fecha_reserva'] = $request->filled('fecha_reserva') ? $request->fecha_reserva : null;
-            }
-            if ($request->has('subtotal')) {
-                $updateData['subtotal'] = $request->subtotal;
-            }
-            if ($request->has('descuento')) {
-                $updateData['descuento'] = $request->descuento ?? 0;
-            }
-            if ($request->has('total')) {
-                $updateData['total'] = $request->total;
-            }
-            if ($request->has('estado')) {
-                $updateData['estado'] = $request->estado;
-            }
-            if ($request->has('observaciones')) {
-                $updateData['observaciones'] = $request->observaciones;
-            }
+                $updateData = [];
+                foreach (['mesa_id', 'tipo_orden', 'subtotal', 'observaciones'] as $campo) {
+                    if ($request->has($campo)) {
+                        $updateData[$campo] = $request->input($campo);
+                    }
+                }
+                if ($request->has('cliente_id') || $request->filled('cliente_nombre')) {
+                    $updateData['cliente_id'] = $clienteId;
+                }
+                if ($request->has('fecha_orden')) {
+                    $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
+                }
+                if ($request->has('fecha_reserva')) {
+                    $updateData['fecha_reserva'] = $request->filled('fecha_reserva') ? $request->fecha_reserva : null;
+                }
+                if ($request->has('descuento')) {
+                    $updateData['descuento'] = $request->descuento ?? 0;
+                }
+                if ($request->has('total')) {
+                    $updateData['total'] = $request->total;
+                }
+                if ($request->has('estado')) {
+                    $updateData['estado'] = $request->estado;
+                }
 
-            if (!empty($updateData)) {
-                $orden->update($updateData);
-            }
+                if (!empty($updateData)) {
+                    $orden->update($updateData);
+                }
 
-            if ($request->has('items')) {
-                $this->syncOrderItems($orden, $request->items);
-            }
+                if ($estadoAnterior !== $orden->estado) {
+                    $this->registrarCambio(
+                        $orden,
+                        null,
+                        null,
+                        $orden->estado === 'cancelado' ? 'orden_cancelada' : 'estado_cambiado',
+                        null,
+                        null,
+                        ['estado' => $estadoAnterior],
+                        ['estado' => $orden->estado],
+                        $usuarioId,
+                        $historialIds,
+                    );
+                }
 
-            $pagosTotales = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
-            $orden->estado_pago = $pagosTotales <= 0
-                ? 'pendiente'
-                : ($pagosTotales < (float) $orden->total ? 'parcial' : 'completado');
-            $orden->save();
+                if ($request->has('items')) {
+                    $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds);
+                }
 
-            DB::commit();
+                $pagosTotales = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
+                $orden->estado_pago = $pagosTotales <= 0
+                    ? 'pendiente'
+                    : ($pagosTotales < (float) $orden->total ? 'parcial' : 'completado');
+                $orden->save();
+
+                return $orden->fresh([
+                    'user', 'cliente', 'mesa', 'pagos', 'detalles.producto.categoria',
+                    'detalles.opciones.modificadorOpcion',
+                ]);
+            });
+
+            // El evento se emite fuera de la transacción: Reverb solo ve cambios confirmados.
+            event(new OrdenCocinaActualizadaEvent($ordenActualizada, $historialIds));
 
             return response()->json([
                 'message' => 'Orden actualizada exitosamente',
-                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.opciones.modificadorOpcion')
+                'orden' => $ordenActualizada,
             ], 200);
         } catch (\Exception $e) {
-            DB::rollBack();
-
             if (str_contains($e->getMessage(), 'No hay suficiente stock')) {
                 return response()->json([
                     'message' => $e->getMessage()
@@ -299,53 +318,193 @@ class OrdenController extends Controller
         }
     }
 
-    private function syncOrderItems(Orden $orden, array $items): void
+    /** Compara los detalles persistidos con el payload del POS sin recrearlos. */
+    private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): void
     {
-        foreach ($orden->detalles as $detalle) {
-            $producto = \App\Models\Producto::find($detalle->producto_id);
-            if ($producto && $producto->maneja_stock && $producto->stock !== null) {
-                $producto->stock = (int) $producto->stock + (int) $detalle->cantidad;
-                $producto->save();
-            }
-        }
-
-        $orden->detalles()->get()->each(function (OrdenDetalle $detalle) {
-            $detalle->opciones()->delete();
-        });
-
-        $orden->detalles()->delete();
+        $detallesExistentes = $orden->detalles()
+            ->with(['producto', 'opciones'])
+            ->lockForUpdate()
+            ->get()
+            ->keyBy('id');
+        $idsRecibidos = [];
 
         foreach ($items as $item) {
-            $producto = \App\Models\Producto::findOrFail($item['producto_id']);
-            $cantidadSolicitada = (int) ($item['cantidad'] ?? 1);
+            $detalleId = $item['orden_detalle_id'] ?? null;
+            $productoNuevo = Producto::findOrFail($item['producto_id']);
+            $cantidadNueva = (int) $item['cantidad'];
 
-            if ($producto->maneja_stock && $producto->stock !== null) {
-                if ((int) $producto->stock < $cantidadSolicitada) {
-                    throw new \RuntimeException('No hay suficiente stock para el producto ' . $producto->nombre . '.');
+            if ($detalleId) {
+                if (isset($idsRecibidos[$detalleId]) || !$detallesExistentes->has($detalleId)) {
+                    throw new \RuntimeException('El detalle enviado no pertenece a esta orden.');
+                }
+                $idsRecibidos[$detalleId] = true;
+                /** @var OrdenDetalle $detalle */
+                $detalle = $detallesExistentes->get($detalleId);
+                $productoAnterior = $detalle->producto;
+                $datosAnterior = $this->datosDetalle($detalle);
+
+                if ($detalle->producto_id !== $productoNuevo->id) {
+                    $this->ajustarStock($productoAnterior, -(int) $detalle->cantidad);
+                    $this->ajustarStock($productoNuevo, $cantidadNueva);
+                } else {
+                    $this->ajustarStock($productoNuevo, $cantidadNueva - (int) $detalle->cantidad);
                 }
 
-                $producto->stock = max(0, (int) $producto->stock - $cantidadSolicitada);
-                $producto->save();
+                $cambioCantidad = (int) $detalle->cantidad !== $cantidadNueva;
+                $cambioBase = $cambioCantidad
+                    || $detalle->producto_id !== $productoNuevo->id
+                    || (float) $detalle->precio_unitario !== (float) $item['precio_unitario']
+                    || ($detalle->nota ?? null) !== ($item['nota'] ?? null);
+
+                $detalle->fill([
+                    'producto_id' => $productoNuevo->id,
+                    'cantidad' => $cantidadNueva,
+                    'precio_unitario' => $item['precio_unitario'],
+                    'nota' => $item['nota'] ?? null,
+                ]);
+                if ($cantidadNueva > (int) $datosAnterior['cantidad'] || $detalle->producto_id !== $datosAnterior['producto_id']) {
+                    $detalle->estado_cocina = 'pendiente';
+                    $detalle->fecha_servido = null;
+                }
+                $detalle->save();
+
+                $opcionesCambiaron = $this->opcionesCambian($detalle, $item['modificadores'] ?? []);
+                if ($opcionesCambiaron) {
+                    $detalle->opciones()->delete();
+                    $this->crearOpcionesDetalle($detalle, $item['modificadores'] ?? []);
+                }
+
+                if ($cambioBase || $opcionesCambiaron) {
+                    $this->registrarCambio(
+                        $orden,
+                        $detalle,
+                        $productoNuevo,
+                        'detalle_modificado',
+                        (int) $datosAnterior['cantidad'],
+                        $cantidadNueva,
+                        $datosAnterior,
+                        $this->datosDetalle($detalle),
+                        $usuarioId,
+                        $historialIds,
+                    );
+                }
+                continue;
             }
 
-            $ordenDetalle = OrdenDetalle::create([
+            $this->ajustarStock($productoNuevo, $cantidadNueva);
+            $detalle = OrdenDetalle::create([
                 'orden_id' => $orden->id,
-                'producto_id' => $item['producto_id'],
-                'cantidad' => $item['cantidad'],
+                'producto_id' => $productoNuevo->id,
+                'cantidad' => $cantidadNueva,
                 'precio_unitario' => $item['precio_unitario'],
                 'nota' => $item['nota'] ?? null,
             ]);
-
-            if (isset($item['modificadores']) && is_array($item['modificadores'])) {
-                foreach ($item['modificadores'] as $modificador) {
-                    OrdenDetalleOpcion::create([
-                        'orden_detalle_id' => $ordenDetalle->id,
-                        'modificador_opcion_id' => $modificador['modificador_opcion_id'],
-                        'precio_extra' => $modificador['precio_extra'] ?? 0,
-                    ]);
-                }
-            }
+            $this->crearOpcionesDetalle($detalle, $item['modificadores'] ?? []);
+            $this->registrarCambio(
+                $orden,
+                $detalle,
+                $productoNuevo,
+                'detalle_agregado',
+                null,
+                $cantidadNueva,
+                null,
+                $this->datosDetalle($detalle),
+                $usuarioId,
+                $historialIds,
+            );
         }
+
+        $detallesExistentes
+            ->filter(fn (OrdenDetalle $detalle) => !isset($idsRecibidos[$detalle->id]))
+            ->each(function (OrdenDetalle $detalle) use ($orden, $usuarioId, &$historialIds) {
+                $this->ajustarStock($detalle->producto, -(int) $detalle->cantidad);
+                $this->registrarCambio(
+                    $orden, $detalle, $detalle->producto, 'detalle_eliminado', (int) $detalle->cantidad,
+                    null, $this->datosDetalle($detalle), null, $usuarioId, $historialIds,
+                );
+                $detalle->opciones()->delete();
+                $detalle->delete();
+            });
+    }
+
+    private function ajustarStock(?Producto $producto, int $diferenciaCantidad): void
+    {
+        if (!$producto || !$producto->maneja_stock || $producto->stock === null || $diferenciaCantidad === 0) {
+            return;
+        }
+
+        $producto = Producto::lockForUpdate()->findOrFail($producto->id);
+        if ($diferenciaCantidad > 0 && (int) $producto->stock < $diferenciaCantidad) {
+            throw new \RuntimeException('No hay suficiente stock para el producto ' . $producto->nombre . '.');
+        }
+
+        $producto->stock = (int) $producto->stock - $diferenciaCantidad;
+        $producto->save();
+    }
+
+    private function crearOpcionesDetalle(OrdenDetalle $detalle, array $modificadores): void
+    {
+        foreach ($modificadores as $modificador) {
+            OrdenDetalleOpcion::create([
+                'orden_detalle_id' => $detalle->id,
+                'modificador_opcion_id' => $modificador['modificador_opcion_id'],
+                'precio_extra' => $modificador['precio_extra'] ?? 0,
+            ]);
+        }
+    }
+
+    private function opcionesCambian(OrdenDetalle $detalle, array $modificadores): bool
+    {
+        $actuales = $detalle->opciones
+            ->map(fn ($opcion) => [(int) $opcion->modificador_opcion_id, (float) $opcion->precio_extra])
+            ->sort()
+            ->values()
+            ->all();
+        $nuevas = collect($modificadores)
+            ->map(fn ($opcion) => [(int) $opcion['modificador_opcion_id'], (float) ($opcion['precio_extra'] ?? 0)])
+            ->sort()
+            ->values()
+            ->all();
+
+        return $actuales !== $nuevas;
+    }
+
+    private function datosDetalle(OrdenDetalle $detalle): array
+    {
+        return [
+            'detalle_id' => $detalle->id,
+            'producto_id' => $detalle->producto_id,
+            'producto_nombre' => $detalle->producto?->nombre,
+            'cantidad' => (int) $detalle->cantidad,
+            'precio_unitario' => (float) $detalle->precio_unitario,
+            'nota' => $detalle->nota,
+        ];
+    }
+
+    private function registrarCambio(
+        Orden $orden,
+        ?OrdenDetalle $detalle,
+        ?Producto $producto,
+        string $tipo,
+        ?int $cantidadAnterior,
+        ?int $cantidadNueva,
+        ?array $datosAnterior,
+        ?array $datosNuevo,
+        ?int $usuarioId,
+        array &$historialIds,
+    ): void {
+        $historial = HistorialCambioOrden::create([
+            'orden_id' => $orden->id,
+            'orden_detalle_id' => $detalle?->id,
+            'user_id' => $usuarioId,
+            'producto_id' => $producto?->id,
+            'tipo_cambio' => $tipo,
+            'cantidad_anterior' => $cantidadAnterior,
+            'cantidad_nueva' => $cantidadNueva,
+            'datos_anterior' => $datosAnterior,
+            'datos_nuevo' => $datosNuevo,
+        ]);
+        $historialIds[] = $historial->id;
     }
 
     /**

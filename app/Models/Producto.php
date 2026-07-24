@@ -32,6 +32,11 @@ class Producto extends Model
         return $this->belongsTo(Categoria::class);
     }
 
+    public function historialCambiosOrden()
+    {
+        return $this->hasMany(HistorialCambioOrden::class, 'producto_id');
+    }
+
     // Relación directa a las opciones asignadas
     public function opciones()
     {

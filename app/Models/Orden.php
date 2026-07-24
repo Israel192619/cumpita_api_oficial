@@ -76,6 +76,11 @@ class Orden extends Model
         return $this->hasMany(PagoOrden::class, 'id_orden');
     }
 
+    public function historialCambios()
+    {
+        return $this->hasMany(HistorialCambioOrden::class, 'orden_id');
+    }
+
     /**
      * Accesores para datos del cliente
      */
@@ -99,4 +104,3 @@ class Orden extends Model
         return max(0, (float) $this->total - $pagosTotales);
     }
 }
-

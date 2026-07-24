@@ -5,6 +5,8 @@ use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\CajaController;
 use App\Http\Controllers\ClienteController;
+use App\Http\Controllers\CocinaController;
+use App\Http\Controllers\HistorialCambioOrdenController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
 use App\Http\Controllers\OrdenController;
@@ -41,6 +43,9 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('mesas', MesaController::class);
     Route::get('clientes/search', [ClienteController::class, 'search']);
     Route::apiResource('clientes', ClienteController::class);
+    Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
+    Route::get('cocina/pedidos', [CocinaController::class, 'pedidos']);
+    Route::patch('cocina/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
     Route::get('cajas/actual', [CajaController::class, 'actual']);
     Route::post('cajas/abrir', [CajaController::class, 'abrir']);
     Route::post('cajas/{caja}/cerrar', [CajaController::class, 'cerrar']);

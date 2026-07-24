@@ -13,13 +13,16 @@ class OrdenDetalle extends Model
         'producto_id',
         'cantidad',
         'precio_unitario',
-        'nota'
+        'nota',
+        'estado_cocina',
+        'fecha_servido',
     ];
 
     protected $casts = [
         'cantidad' => 'integer',
         'precio_unitario' => 'decimal:2',
         'nota' => 'string',
+        'fecha_servido' => 'datetime',
     ];
 
     /**
@@ -44,5 +47,10 @@ class OrdenDetalle extends Model
     public function opciones()
     {
         return $this->hasMany(OrdenDetalleOpcion::class);
+    }
+
+    public function historialCambios()
+    {
+        return $this->hasMany(HistorialCambioOrden::class, 'orden_detalle_id');
     }
 }

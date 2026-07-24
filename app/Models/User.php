@@ -60,4 +60,9 @@ class User extends Authenticatable implements JWTSubject
     {
         return $this->hasMany(Caja::class);
     }
+
+    public function historialCambiosOrden()
+    {
+        return $this->hasMany(HistorialCambioOrden::class, 'user_id');
+    }
 }

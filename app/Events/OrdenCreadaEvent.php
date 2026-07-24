@@ -5,8 +5,6 @@ namespace App\Events;
 use App\Models\Orden;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PresenceChannel;
-use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -18,10 +16,15 @@ class OrdenCreadaEvent implements ShouldBroadcast
     /**
      * Create a new event instance.
      */
-    public $orden;
-    public function __construct($orden)
+    public Orden $orden;
+
+    public function __construct(Orden $orden)
     {
-        $this->orden = $orden;
+        $this->orden = $orden->loadMissing([
+            'cliente:id,nombre',
+            'mesa:id,numero',
+            'detalles.producto.categoria',
+        ]);
     }
 
     /**
@@ -39,5 +42,13 @@ class OrdenCreadaEvent implements ShouldBroadcast
     public function broadcastAs(): string
     {
         return 'OrdenCreada';
+    }
+
+    /**
+     * El KDS recibe la orden completa, sin requerir una consulta adicional.
+     */
+    public function broadcastWith(): array
+    {
+        return ['orden' => $this->orden->toArray()];
     }
 }
