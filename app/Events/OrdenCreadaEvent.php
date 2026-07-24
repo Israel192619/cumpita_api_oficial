@@ -2,6 +2,7 @@
 
 namespace App\Events;
 
+use App\Models\Orden;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PresenceChannel;
@@ -10,16 +11,17 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class OrdenCreadaEvent
+class OrdenCreadaEvent implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     /**
      * Create a new event instance.
      */
-    public function __construct()
+    public $orden;
+    public function __construct($orden)
     {
-        //
+        $this->orden = $orden;
     }
 
     /**
@@ -30,7 +32,12 @@ class OrdenCreadaEvent
     public function broadcastOn(): array
     {
         return [
-            new PrivateChannel('channel-name'),
+            new Channel('canal-ordenes'),
         ];
+    }
+
+    public function broadcastAs(): string
+    {
+        return 'OrdenCreada';
     }
 }

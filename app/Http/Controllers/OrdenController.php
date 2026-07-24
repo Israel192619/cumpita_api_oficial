@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\OrdenCreadaEvent;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
@@ -149,6 +150,8 @@ class OrdenController extends Controller
             }
 
             DB::commit();
+
+            event(new OrdenCreadaEvent($orden));
 
             return response()->json([
                 'message' => 'Orden creada exitosamente',
