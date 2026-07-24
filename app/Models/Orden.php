@@ -13,6 +13,7 @@ class Orden extends Model
         'mesa_id',
         'fecha_orden',
         'fecha_reserva',
+        'numero_orden',
         'subtotal',
         'descuento',
         'total',

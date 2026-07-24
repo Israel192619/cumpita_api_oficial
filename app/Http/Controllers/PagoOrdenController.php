@@ -50,12 +50,28 @@ class PagoOrdenController extends Controller
             $montoRecibido = (float) $request->monto_recibido;
             $tipoPago = $request->tipo_pago;
 
+            $totalPagado = PagoOrden::where('id_orden', $orden->id)
+            ->where('tipo_pago', '!=', 'devolucion')
+            ->sum('monto_pagado');
+
+            $totalDevuelto = abs(
+                PagoOrden::where('id_orden', $orden->id)
+                    ->where('tipo_pago', 'devolucion')
+                    ->sum('monto_pagado')
+            );
+
             if ($tipoPago === 'devolucion') {
+                $saldoDisponibleParaDevolver = $totalPagado - $totalDevuelto - (float) $orden->total;
                 $montoDevolucionMaxima = max(0, (float) $pagosAnteriores - (float) $orden->total);
 
-                if ($montoDevolucionMaxima <= 0) {
+                // if ($montoDevolucionMaxima <= 0) {
+                //     return response()->json([
+                //         'error' => 'No hay saldo para devolver en esta orden.'
+                //     ], 422);
+                // }
+                if ($saldoDisponibleParaDevolver <= 0) {
                     return response()->json([
-                        'error' => 'No hay saldo para devolver en esta orden.'
+                        'error' => 'No existe un monto disponible para devolver.'
                     ], 422);
                 }
 

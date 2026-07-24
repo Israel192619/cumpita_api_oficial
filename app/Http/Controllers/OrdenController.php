@@ -7,6 +7,7 @@ use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
 use App\Models\PagoOrden;
 use App\Models\Cliente;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -52,6 +53,8 @@ class OrdenController extends Controller
             'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
         ]);
 
+        
+
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
@@ -81,11 +84,23 @@ class OrdenController extends Controller
                 $clienteId = $cliente->id;
             }
 
+            $fechaOrden = $request->filled('fecha_orden')
+                ? Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_orden)
+                : now();
+
+            $ultimoNumero = Orden::whereDate(
+                'fecha_orden',
+                $fechaOrden->toDateString()
+            )->max('numero_orden');
+
+            $numeroOrden = ($ultimoNumero ?? 0) + 1;
+
             // Crear la orden
             $orden = Orden::create([
                 'user_id' => $userActual->id,
                 'cliente_id' => $clienteId,
                 'mesa_id' => $request->mesa_id,
+                'numero_orden' => $numeroOrden,
                 'fecha_orden' => $request->filled('fecha_orden') ? $request->fecha_orden : null,
                 'fecha_reserva' => $request->filled('fecha_reserva') ? $request->fecha_reserva : null,
                 'subtotal' => $request->subtotal,
