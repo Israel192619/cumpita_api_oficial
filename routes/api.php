@@ -3,6 +3,7 @@
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
+use App\Http\Controllers\CajaController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
@@ -40,6 +41,10 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('mesas', MesaController::class);
     Route::get('clientes/search', [ClienteController::class, 'search']);
     Route::apiResource('clientes', ClienteController::class);
+    Route::get('cajas/actual', [CajaController::class, 'actual']);
+    Route::post('cajas/abrir', [CajaController::class, 'abrir']);
+    Route::post('cajas/{caja}/cerrar', [CajaController::class, 'cerrar']);
+    Route::apiResource('cajas', CajaController::class)->only(['index', 'show', 'update', 'destroy']);
     Route::apiResource('ordenes', OrdenController::class);
     Route::apiResource('pagos-ordenes', PagoOrdenController::class);
 });

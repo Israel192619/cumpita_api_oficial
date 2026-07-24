@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Orden;
 use App\Models\PagoOrden;
+use App\Models\Caja;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -14,7 +15,7 @@ class PagoOrdenController extends Controller
      */
     public function index(Request $request)
     {
-        $query = PagoOrden::with('orden');
+        $query = PagoOrden::with('orden', 'caja');
 
         if ($request->has('id_orden')) {
             $query->where('id_orden', $request->input('id_orden'));
@@ -42,6 +43,24 @@ class PagoOrdenController extends Controller
         return DB::transaction(function () use ($request) {
 
             $orden = Orden::lockForUpdate()->findOrFail($request->id_orden);
+            $cajaId = null;
+
+            // Solo el efectivo entra a la caja. Para cobrar efectivo debe existir
+            // una caja abierta del cajero que registra el pago.
+            if ($request->metodo_pago === 'efectivo') {
+                $caja = Caja::where('user_id', auth('api')->id())
+                    ->where('estado', 'abierta')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$caja) {
+                    return response()->json([
+                        'error' => 'Debes abrir una caja antes de registrar pagos en efectivo.'
+                    ], 422);
+                }
+
+                $cajaId = $caja->id;
+            }
 
             $pagosAnteriores = PagoOrden::where('id_orden', $orden->id)
                 ->sum('monto_pagado');
@@ -117,6 +136,7 @@ class PagoOrdenController extends Controller
 
             $pago = PagoOrden::create([
                 'id_orden'        => $orden->id,
+                'caja_id'          => $cajaId,
                 'monto_recibido'  => $montoRecibido,
                 'monto_pagado'    => $montoAbonado,
                 'cambio_devuelto' => $cambioDevuelto,

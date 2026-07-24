@@ -55,4 +55,9 @@ class User extends Authenticatable implements JWTSubject
     public function perfilUsuarios(){
         return $this->hasOne(PerfilUsuario::class, 'user_id');
     }
+
+    public function cajas()
+    {
+        return $this->hasMany(Caja::class);
+    }
 }
