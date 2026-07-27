@@ -24,6 +24,7 @@ class OrdenCreadaEvent implements ShouldBroadcast
             'cliente:id,nombre',
             'mesa:id,numero',
             'detalles.producto.categoria',
+            'detalles.estacion',
         ]);
     }
 

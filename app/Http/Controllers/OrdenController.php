@@ -23,7 +23,7 @@ class OrdenController extends Controller
      */
     public function index()
     {
-        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->get();
+        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->get();
         return response()->json([
             'ordenes' => $ordenes
         ], 200);
@@ -65,6 +65,21 @@ class OrdenController extends Controller
 
         if (!$request->cliente_id && !$request->cliente_nombre) {
             return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
+        }
+
+        // La estación se valida antes de abrir la transacción: cada detalle nuevo debe
+        // conservar una estación concreta aunque el producto cambie más adelante.
+        $productos = Producto::with('estacion')
+            ->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
+            ->get()
+            ->keyBy('id');
+        foreach ($request->items as $item) {
+            $producto = $productos->get($item['producto_id']);
+            if (!$producto || !$producto->estacion_id || !$producto->estacion?->activa) {
+                return response()->json([
+                    'message' => 'El producto seleccionado no tiene una estación de trabajo activa: ' . ($producto?->nombre ?? $item['producto_id']) . '.',
+                ], 422);
+            }
         }
 
         DB::beginTransaction();
@@ -117,7 +132,7 @@ class OrdenController extends Controller
 
             // Crear detalles de la orden (items del carrito)
             foreach ($request->items as $item) {
-                $producto = \App\Models\Producto::findOrFail($item['producto_id']);
+                $producto = $productos->get($item['producto_id']);
 
                 if ($producto->maneja_stock && $producto->stock !== null) {
                     $cantidadSolicitada = (int) $item['cantidad'];
@@ -135,6 +150,7 @@ class OrdenController extends Controller
                 $ordenDetalle = OrdenDetalle::create([
                     'orden_id' => $orden->id,
                     'producto_id' => $item['producto_id'],
+                    'estacion_id' => $producto->estacion_id,
                     'cantidad' => $item['cantidad'],
                     'precio_unitario' => $item['precio_unitario'],
                     'nota' => $item['nota'] ?? null,
@@ -158,7 +174,7 @@ class OrdenController extends Controller
 
             return response()->json([
                 'message' => 'Orden creada exitosamente',
-                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.opciones.modificadorOpcion')
+                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -174,7 +190,7 @@ class OrdenController extends Controller
      */
     public function show(string $id)
     {
-        $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
+        $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
         
         if (!$orden) {
             return response()->json(['message' => 'Orden no encontrada'], 404);
@@ -292,7 +308,7 @@ class OrdenController extends Controller
                 $orden->save();
 
                 return $orden->fresh([
-                    'user', 'cliente', 'mesa', 'pagos', 'detalles.producto.categoria',
+                    'user', 'cliente', 'mesa', 'pagos', 'detalles.producto.categoria', 'detalles.estacion',
                     'detalles.opciones.modificadorOpcion',
                 ]);
             });
@@ -305,7 +321,7 @@ class OrdenController extends Controller
                 'orden' => $ordenActualizada,
             ], 200);
         } catch (\Exception $e) {
-            if (str_contains($e->getMessage(), 'No hay suficiente stock')) {
+            if (str_contains($e->getMessage(), 'No hay suficiente stock') || str_contains($e->getMessage(), 'estación de trabajo activa')) {
                 return response()->json([
                     'message' => $e->getMessage()
                 ], 422);
@@ -322,7 +338,7 @@ class OrdenController extends Controller
     private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): void
     {
         $detallesExistentes = $orden->detalles()
-            ->with(['producto', 'opciones'])
+            ->with(['producto', 'estacion', 'opciones'])
             ->lockForUpdate()
             ->get()
             ->keyBy('id');
@@ -330,7 +346,8 @@ class OrdenController extends Controller
 
         foreach ($items as $item) {
             $detalleId = $item['orden_detalle_id'] ?? null;
-            $productoNuevo = Producto::findOrFail($item['producto_id']);
+            $productoNuevo = Producto::with('estacion')->findOrFail($item['producto_id']);
+            $this->asegurarEstacionActiva($productoNuevo);
             $cantidadNueva = (int) $item['cantidad'];
 
             if ($detalleId) {
@@ -358,6 +375,11 @@ class OrdenController extends Controller
 
                 $detalle->fill([
                     'producto_id' => $productoNuevo->id,
+                    // Si se sustituye el producto, nace un nuevo snapshot de estación.
+                    // En cambios de cantidad/precio se mantiene intacto el snapshot original.
+                    'estacion_id' => $detalle->producto_id !== $productoNuevo->id
+                        ? $productoNuevo->estacion_id
+                        : $detalle->estacion_id,
                     'cantidad' => $cantidadNueva,
                     'precio_unitario' => $item['precio_unitario'],
                     'nota' => $item['nota'] ?? null,
@@ -395,6 +417,7 @@ class OrdenController extends Controller
             $detalle = OrdenDetalle::create([
                 'orden_id' => $orden->id,
                 'producto_id' => $productoNuevo->id,
+                'estacion_id' => $productoNuevo->estacion_id,
                 'cantidad' => $cantidadNueva,
                 'precio_unitario' => $item['precio_unitario'],
                 'nota' => $item['nota'] ?? null,
@@ -442,6 +465,13 @@ class OrdenController extends Controller
         $producto->save();
     }
 
+    private function asegurarEstacionActiva(Producto $producto): void
+    {
+        if (!$producto->estacion_id || !$producto->estacion?->activa) {
+            throw new \RuntimeException('El producto ' . $producto->nombre . ' no tiene una estación de trabajo activa.');
+        }
+    }
+
     private function crearOpcionesDetalle(OrdenDetalle $detalle, array $modificadores): void
     {
         foreach ($modificadores as $modificador) {
@@ -475,6 +505,8 @@ class OrdenController extends Controller
             'detalle_id' => $detalle->id,
             'producto_id' => $detalle->producto_id,
             'producto_nombre' => $detalle->producto?->nombre,
+            'estacion_id' => $detalle->estacion_id,
+            'estacion_nombre' => $detalle->estacion?->nombre,
             'cantidad' => (int) $detalle->cantidad,
             'precio_unitario' => (float) $detalle->precio_unitario,
             'nota' => $detalle->nota,

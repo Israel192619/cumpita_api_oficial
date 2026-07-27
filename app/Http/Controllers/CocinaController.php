@@ -18,7 +18,7 @@ class CocinaController extends Controller
         $fecha = $request->input('fecha', now()->toDateString());
 
         $ordenes = Orden::query()
-            ->with(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria'])
+            ->with(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion'])
             ->whereDate('created_at', $fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
             ->whereHas('detalles', fn ($query) => $query->where('estado_cocina', 'pendiente'))
@@ -53,12 +53,13 @@ class CocinaController extends Controller
                 'cliente:id,nombre',
                 'mesa:id,numero',
                 'detalles.producto.categoria',
+                'detalles.estacion',
             ]);
 
             return [
                 'orden' => $ordenActualizada,
                 'message' => $data['estado_cocina'] === 'servido' ? 'Producto marcado como servido.' : 'Producto devuelto a pendientes.',
-                'detalle' => $detalle->fresh(['producto.categoria']),
+                'detalle' => $detalle->fresh(['producto.categoria', 'estacion']),
                 'orden_estado' => $orden->estado,
                 'orden_id' => $orden->id,
             ];

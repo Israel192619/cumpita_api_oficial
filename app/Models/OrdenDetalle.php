@@ -11,6 +11,7 @@ class OrdenDetalle extends Model
     protected $fillable = [
         'orden_id',
         'producto_id',
+        'estacion_id',
         'cantidad',
         'precio_unitario',
         'nota',
@@ -47,6 +48,12 @@ class OrdenDetalle extends Model
     public function opciones()
     {
         return $this->hasMany(OrdenDetalleOpcion::class);
+    }
+
+    /** Estación congelada cuando se creó el detalle; no depende de cambios posteriores del producto. */
+    public function estacion()
+    {
+        return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
     }
 
     public function historialCambios()

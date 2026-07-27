@@ -7,6 +7,7 @@ use App\Models\Producto;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 class ProductoController extends Controller
 {
@@ -46,7 +47,7 @@ class ProductoController extends Controller
     public function index(Request $request)
     {
         // OPTIMIZACIÓN: Añadimos 'opciones.modificador' al método 'with'
-        $query = Producto::with(['categoria', 'opciones.modificador']);
+        $query = Producto::with(['categoria', 'estacion', 'opciones.modificador']);
 
         if ($request->filled('categoria_id')) {
             $categoriaId = $request->categoria_id;
@@ -104,6 +105,7 @@ class ProductoController extends Controller
             // El método create funciona gracias al $fillable que definimos en el modelo
             $producto = Producto::create([
                 'categoria_id' => $data['categoria_id'],
+                'estacion_id'  => $data['estacion_id'],
                 'nombre'       => $data['nombre'],
                 'descripcion'  => $data['descripcion'] ?? null,
                 'precio'       => $data['precio'],
@@ -128,7 +130,7 @@ class ProductoController extends Controller
             }
 
             return response()->json([
-                'producto' => $producto->load('categoria'),
+                'producto' => $producto->load(['categoria', 'estacion']),
                 'message'  => 'Producto creado correctamente'
             ], 201);
         });
@@ -142,7 +144,7 @@ class ProductoController extends Controller
         $producto->modificadores = $producto->modificadores_estructurados;
 
         return response()->json([
-            'producto' => $producto->load('categoria')
+            'producto' => $producto->load(['categoria', 'estacion'])
         ]);
     }
 
@@ -171,6 +173,7 @@ class ProductoController extends Controller
 
             $producto->update([
                 'categoria_id' => $data['categoria_id'],
+                'estacion_id'  => $data['estacion_id'],
                 'nombre'       => $data['nombre'],
                 'descripcion'  => $data['descripcion'] ?? null,
                 'precio'       => $data['precio'],
@@ -197,7 +200,7 @@ class ProductoController extends Controller
 
             return response()->json([
                 'message' => 'Producto actualizado correctamente',
-                'producto' => $producto->load('categoria')
+                'producto' => $producto->load(['categoria', 'estacion'])
             ]);
         });
     }
@@ -238,6 +241,10 @@ class ProductoController extends Controller
     {
         return $request->validate([
             'categoria_id' => 'required|exists:categorias,id',
+            'estacion_id' => [
+                'nullable',
+                Rule::exists('estaciones_trabajo', 'id')->where(fn ($query) => $query->where('activa', true)),
+            ],
             'nombre' => 'required|string|max:255',
             'descripcion' => 'nullable|string',
             'precio' => 'required|numeric|min:0',

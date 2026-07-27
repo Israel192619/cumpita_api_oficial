@@ -15,7 +15,10 @@ class OrdenCocinaActualizadaEvent implements ShouldBroadcast
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     /** @param array<int, int> $historialIds */
-    public function __construct(public Orden $orden, private array $historialIds = []) {}
+    public function __construct(public Orden $orden, private array $historialIds = [])
+    {
+        $this->orden->loadMissing(['detalles.producto.categoria', 'detalles.estacion']);
+    }
 
     public function broadcastOn(): array
     {

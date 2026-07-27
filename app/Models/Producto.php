@@ -8,6 +8,7 @@ class Producto extends Model
 {
     protected $fillable = [
         'categoria_id', 
+        'estacion_id',
         'nombre', 
         'descripcion', 
         'precio', 
@@ -30,6 +31,11 @@ class Producto extends Model
     public function categoria()
     {
         return $this->belongsTo(Categoria::class);
+    }
+
+    public function estacion()
+    {
+        return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
     }
 
     public function historialCambiosOrden()

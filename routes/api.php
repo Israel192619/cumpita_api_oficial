@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\CajaController;
+use App\Http\Controllers\EstacionTrabajoController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\CocinaController;
 use App\Http\Controllers\HistorialCambioOrdenController;
@@ -37,6 +38,7 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('roles', RoleController::class);
     Route::apiResource('users', UserController::class);
     Route::apiResource('categorias', CategoriaController::class);
+    Route::apiResource('estaciones-trabajo', EstacionTrabajoController::class);
     Route::apiResource('modificadores', ModificadorController::class);
     Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
     Route::apiResource('productos', ProductoController::class);
