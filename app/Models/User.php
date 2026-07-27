@@ -12,7 +12,7 @@ use Illuminate\Notifications\Notifiable;
 use Tymon\JWTAuth\Contracts\JWTSubject;
 
 
-#[Fillable(['name', 'username', 'email', 'password', 'role_id'])]
+#[Fillable(['name', 'username', 'email', 'password', 'role_id', 'estacion_id'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable implements JWTSubject
 {
@@ -50,6 +50,11 @@ class User extends Authenticatable implements JWTSubject
     public function role()
     {
         return $this->belongsTo(Role::class);
+    }
+
+    public function estacion()
+    {
+        return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
     }
     
     public function perfilUsuarios(){

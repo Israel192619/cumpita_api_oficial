@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 
 class UserController extends Controller
 {
@@ -17,7 +18,7 @@ class UserController extends Controller
     public function index()
     {
         $userActual = auth('api')->user();
-        $users = User::where('id', '!=', $userActual->id)->with('perfilUsuarios')->get();
+        $users = User::where('id', '!=', $userActual->id)->with('perfilUsuarios', 'estacion')->get();
         return response()->json([
             'users' => $users
         ], 200);
@@ -33,6 +34,10 @@ class UserController extends Controller
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8',
             'role_id' => 'required|exists:roles,id',
+            'estacion_id' => [
+                'nullable',
+                Rule::exists('estaciones_trabajo', 'id')->where(fn ($query) => $query->where('activa', true)),
+            ],
             'direccion' => 'nullable|string',
             'numero_celular' => 'nullable|string',
             'avatar' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
@@ -50,6 +55,7 @@ class UserController extends Controller
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
                 'role_id' => $request->role_id,
+                'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : null,
             ]);
 
             $avatarPath = null;
@@ -66,7 +72,7 @@ class UserController extends Controller
             DB::commit();
             return response()->json([
                 'message' => 'Usuario creado correctamente',
-                'user' => $user->load('perfilUsuarios'),
+                'user' => $user->load('perfilUsuarios', 'estacion'),
             ], 201);
         } catch (\Exception $e){
             DB::rollBack();
@@ -82,7 +88,7 @@ class UserController extends Controller
      */
     public function show(string $id)
     {
-        $user = User::with('perfilUsuarios')->findOrFail($id);
+        $user = User::with('perfilUsuarios', 'estacion')->findOrFail($id);
         if (!$user) {
             return response()->json(['message' => 'Usuario no encontrado'], 404);
         }
@@ -101,6 +107,10 @@ class UserController extends Controller
             'email' => "required|email|unique:users,email,$id",
             'password' => 'nullable|min:8',
             'role_id' => 'required|exists:roles,id',
+            'estacion_id' => [
+                'nullable',
+                Rule::exists('estaciones_trabajo', 'id')->where(fn ($query) => $query->where('activa', true)),
+            ],
 
             'direccion' => 'required|string|max:255',
             'numero_celular' => 'required|string|max:20',
@@ -112,6 +122,8 @@ class UserController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
+        DB::beginTransaction();
+
         try {
             $user = User::findOrFail($id);
             if (!$user) {
@@ -121,6 +133,7 @@ class UserController extends Controller
                 'name' => $request->name,
                 'email' => $request->email,
                 'role_id' => $request->role_id,
+                'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : $user->estacion_id,
             ]);
             if ($request->filled('password')) {
                 $user->update([
@@ -151,7 +164,7 @@ class UserController extends Controller
 
             return response()->json([
                 'message' => 'Usuario actualizado correctamente',
-                'data' => $user->load('perfilUsuarios')
+                'data' => $user->load('perfilUsuarios', 'estacion')
             ], 200);
 
         } catch (\Exception $e) {

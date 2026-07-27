@@ -42,9 +42,9 @@ class EstacionTrabajoController extends Controller
 
     public function destroy(EstacionTrabajo $estacionTrabajo)
     {
-        if ($estacionTrabajo->productos()->exists() || $estacionTrabajo->detallesOrden()->exists()) {
+        if ($estacionTrabajo->productos()->exists() || $estacionTrabajo->detallesOrden()->exists() || $estacionTrabajo->usuarios()->exists()) {
             return response()->json([
-                'message' => 'La estación tiene productos o detalles históricos asociados. Desactívala en lugar de eliminarla.',
+                'message' => 'La estación tiene productos, usuarios o detalles históricos asociados. Desactívala en lugar de eliminarla.',
             ], 422);
         }
 

@@ -20,6 +20,11 @@ class EstacionTrabajo extends Model
         return $this->hasMany(Producto::class, 'estacion_id');
     }
 
+    public function usuarios()
+    {
+        return $this->hasMany(User::class, 'estacion_id');
+    }
+
     public function detallesOrden()
     {
         return $this->hasMany(OrdenDetalle::class, 'estacion_id');
