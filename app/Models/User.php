@@ -56,6 +56,11 @@ class User extends Authenticatable implements JWTSubject
     {
         return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
     }
+
+    public function puestoActual()
+    {
+        return $this->hasOne(PuestoEstacion::class, 'user_id');
+    }
     
     public function perfilUsuarios(){
         return $this->hasOne(PerfilUsuario::class, 'user_id');

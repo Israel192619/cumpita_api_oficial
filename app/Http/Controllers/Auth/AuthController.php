@@ -69,13 +69,38 @@ class AuthController extends Controller
         return response()->json(['message' => 'Successfully logged out']);
     }
 
-    public function getUser()
+    /**public function getUser()
     {
         try {
             $user = Auth::user();
             if (!$user) {
                 return response()->json(['message' => 'User not found'], 404);
             }
+
+            // Load related perfil, estacion y rol para la UI de Cocina.
+            $user->loadMissing(['perfilUsuarios', 'estacion', 'role']);
+
+            return response()->json($user);
+        } catch (JWTException $e) {
+            return response()->json(['message' => 'Failed to fetch user profile'], 500);
+        }
+    }*/
+    public function getUser()
+    {
+        try {
+            // Obtenemos el ID del usuario autenticado de forma segura
+            $userId = Auth::id();
+            
+            if (!$userId) {
+                return response()->json(['message' => 'User not found'], 404);
+            }
+
+            // Buscamos el usuario desde el Modelo Eloquent usando el ID
+            $user = User::findOrFail($userId);
+
+            // Ahora loadMissing funcionará sin problemas
+            $user->loadMissing(['perfilUsuarios', 'estacion', 'role']);
+
             return response()->json($user);
         } catch (JWTException $e) {
             return response()->json(['message' => 'Failed to fetch user profile'], 500);

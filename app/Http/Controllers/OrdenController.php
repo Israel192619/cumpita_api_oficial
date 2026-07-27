@@ -172,6 +172,13 @@ class OrdenController extends Controller
 
             event(new OrdenCreadaEvent($orden));
 
+            // Intentar asignación automática tras crear la orden
+            try {
+                app(\App\Services\AsignadorOrdenCocinaService::class)->asignarSiguienteOrdenDisponible();
+            } catch (\Throwable $e) {
+                // no interrumpir la respuesta por errores del asignador
+            }
+
             return response()->json([
                 'message' => 'Orden creada exitosamente',
                 'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
