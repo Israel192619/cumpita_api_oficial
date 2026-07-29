@@ -17,7 +17,12 @@ class OrdenCocinaActualizadaEvent implements ShouldBroadcast
     /** @param array<int, int> $historialIds */
     public function __construct(public Orden $orden, private array $historialIds = [])
     {
-        $this->orden->loadMissing(['detalles.producto.categoria', 'detalles.estacion']);
+        $this->orden->loadMissing([
+            'cliente',
+            'mesa',
+            'detalles.producto.categoria',
+            'detalles.estacion',
+        ]);
     }
 
     public function broadcastOn(): array

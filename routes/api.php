@@ -50,12 +50,12 @@ Route::middleware('jwt')->group(function () {
     Route::get('cocina/pedidos', [CocinaController::class, 'pedidos']);
     Route::get('cocina/control', [PuestoEstacionController::class, 'control']);
     Route::patch('cocina/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
-    Route::get('cocina/puestos', [PuestoEstacionController::class, 'index']);
-    Route::post('cocina/puestos/{puesto}/ocupar', [PuestoEstacionController::class, 'ocupar']);
-    Route::post('cocina/puestos/{puesto}/liberar', [PuestoEstacionController::class, 'liberar']);
-    Route::post('cocina/puestos/{puesto}/asignar-orden', [PuestoEstacionController::class, 'asignarOrden']);
-    Route::post('cocina/puestos/{puesto}/liberar-orden', [PuestoEstacionController::class, 'liberarOrden']);
-    Route::post('cocina/puestos/{puesto}/orden/lista', [PuestoEstacionController::class, 'ordenarLista']);
+    Route::get('cocina/monitor/puestos', [PuestoEstacionController::class, 'index']);
+    Route::post('cocina/control/puestos/{puesto}/ocupar', [PuestoEstacionController::class, 'ocupar']);
+    Route::post('cocina/control/puestos/{puesto}/liberar', [PuestoEstacionController::class, 'liberar']);
+    Route::post('cocina/control/puestos/{puesto}/asignar-orden', [PuestoEstacionController::class, 'asignarOrden']);
+    Route::post('cocina/control/puestos/{puesto}/liberar-orden', [PuestoEstacionController::class, 'liberarOrden']);
+    Route::post('cocina/control/puestos/{puesto}/orden/lista', [PuestoEstacionController::class, 'ordenarLista']);
     Route::get('cajas/actual', [CajaController::class, 'actual']);
     Route::post('cajas/abrir', [CajaController::class, 'abrir']);
     Route::post('cajas/{caja}/cerrar', [CajaController::class, 'cerrar']);

@@ -15,7 +15,11 @@ class PuestoCocinaActualizadoEvent implements ShouldBroadcast
 
     public function __construct(public PuestoEstacion $puesto)
     {
-        $this->puesto->loadMissing(['usuario', 'orden']);
+        $this->puesto->loadMissing([
+            'usuario',
+            'orden.detalles.producto.categoria',
+            'orden.detalles.estacion',
+        ]);
     }
 
     public function broadcastOn(): array

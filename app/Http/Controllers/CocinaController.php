@@ -21,11 +21,13 @@ class CocinaController extends Controller
         $estacionId = $usuario?->estacion_id;
 
         // Construir query base (sin filtro por estación) para contar órdenes antes del filtrado
+        $detallesActivos = ['pendiente', 'en_preparacion', 'listo_para_recoger'];
+
         $baseQuery = Orden::query()
             ->with(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion'])
             ->whereDate('created_at', $fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
-            ->whereHas('detalles', fn ($q) => $q->where('estado_cocina', 'pendiente'))
+            ->whereHas('detalles', fn ($q) => $q->whereIn('estado_cocina', $detallesActivos))
             ->orderBy('created_at');
 
         $ordenesAntes = (clone $baseQuery)->get();
@@ -33,7 +35,7 @@ class CocinaController extends Controller
 
         if ($estacionId !== null) {
             $ordenes = (clone $baseQuery)
-                ->whereHas('detalles', fn ($q) => $q->where('estado_cocina', 'pendiente')->where('estacion_id', $estacionId))
+                ->whereHas('detalles', fn ($q) => $q->whereIn('estado_cocina', $detallesActivos)->where('estacion_id', $estacionId))
                 ->get();
         } else {
             $ordenes = $ordenesAntes;

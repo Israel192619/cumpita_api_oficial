@@ -50,7 +50,7 @@ class PuestoEstacion extends Model
             return null;
         }
 
-        if ($detalles->contains(fn ($detalle) => $detalle->estado_cocina === 'pendiente')) {
+        if ($detalles->contains(fn ($detalle) => $detalle->estado_cocina === 'pendiente' || $detalle->estado_cocina === null)) {
             return 'pendiente';
         }
 

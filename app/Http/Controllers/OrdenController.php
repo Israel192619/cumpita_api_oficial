@@ -154,6 +154,7 @@ class OrdenController extends Controller
                     'cantidad' => $item['cantidad'],
                     'precio_unitario' => $item['precio_unitario'],
                     'nota' => $item['nota'] ?? null,
+                    'estado_cocina' => 'pendiente',
                 ]);
 
                 // Crear opciones del detalle (modificadores)
@@ -174,7 +175,7 @@ class OrdenController extends Controller
 
             // Intentar asignación automática tras crear la orden
             try {
-                app(\App\Services\AsignadorOrdenCocinaService::class)->asignarSiguienteOrdenDisponible();
+                app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
             } catch (\Throwable $e) {
                 // no interrumpir la respuesta por errores del asignador
             }
