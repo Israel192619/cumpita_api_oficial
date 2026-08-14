@@ -5,6 +5,7 @@ use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\CajaController;
 use App\Http\Controllers\EstacionTrabajoController;
+use App\Http\Controllers\GastoCajaController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\CocinaController;
 use App\Http\Controllers\HistorialCambioOrdenController;
@@ -66,4 +67,6 @@ Route::middleware('jwt')->group(function () {
     Route::get('/me', [AuthController::class, 'getUser']);
     Route::post('movimientos-caja/{movimiento}/anular', [MovimientoCajaController::class, 'anular']);
     Route::apiResource('movimientos-caja', MovimientoCajaController::class)->only(['index', 'store']);
+    Route::post('gastos-caja/{gasto}/anular', [GastoCajaController::class, 'anular']);
+    Route::apiResource('gastos-caja', GastoCajaController::class)->only(['index', 'store']);
 });

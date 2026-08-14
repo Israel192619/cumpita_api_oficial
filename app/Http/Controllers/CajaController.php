@@ -169,6 +169,8 @@ class CajaController extends Controller
             ->where('estado', 'ACTIVO')->where('tipo', 'INGRESO')->sum('monto'), 2);
         $retirosMovimientos = round((float) $caja->movimientos()
             ->where('estado', 'ACTIVO')->where('tipo', 'RETIRO')->sum('monto'), 2);
+        $gastosActivos = round((float) $caja->gastos()
+            ->where('estado', 'ACTIVO')->sum('monto'), 2);
         $montoApertura = round((float) $caja->monto_apertura, 2);
 
         return [
@@ -176,7 +178,8 @@ class CajaController extends Controller
             'ingresos_efectivo' => $totalEfectivo,
             'ingresos_movimientos' => $ingresosMovimientos,
             'retiros_movimientos' => $retirosMovimientos,
-            'monto_esperado' => round($montoApertura + $totalEfectivo + $ingresosMovimientos - $retirosMovimientos, 2),
+            'gastos_activos' => $gastosActivos,
+            'monto_esperado' => round($montoApertura + $totalEfectivo + $ingresosMovimientos - $retirosMovimientos - $gastosActivos, 2),
             'cantidad_pagos_efectivo' => $caja->pagos()->count(),
         ];
     }
