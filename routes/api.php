@@ -10,6 +10,7 @@ use App\Http\Controllers\CocinaController;
 use App\Http\Controllers\HistorialCambioOrdenController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
+use App\Http\Controllers\MovimientoCajaController;
 use App\Http\Controllers\PuestoEstacionController;
 use App\Http\Controllers\OrdenController;
 use App\Http\Controllers\PagoOrdenController;
@@ -63,4 +64,6 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('ordenes', OrdenController::class);
     Route::apiResource('pagos-ordenes', PagoOrdenController::class);
     Route::get('/me', [AuthController::class, 'getUser']);
+    Route::post('movimientos-caja/{movimiento}/anular', [MovimientoCajaController::class, 'anular']);
+    Route::apiResource('movimientos-caja', MovimientoCajaController::class)->only(['index', 'store']);
 });

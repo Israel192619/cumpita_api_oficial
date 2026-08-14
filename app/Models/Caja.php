@@ -39,4 +39,9 @@ class Caja extends Model
     {
         return $this->hasMany(PagoOrden::class);
     }
+
+    public function movimientos()
+    {
+        return $this->hasMany(MovimientoCaja::class);
+    }
 }

@@ -165,12 +165,18 @@ class CajaController extends Controller
     private function resumen(Caja $caja): array
     {
         $totalEfectivo = round((float) $caja->pagos()->sum('monto_pagado'), 2);
+        $ingresosMovimientos = round((float) $caja->movimientos()
+            ->where('estado', 'ACTIVO')->where('tipo', 'INGRESO')->sum('monto'), 2);
+        $retirosMovimientos = round((float) $caja->movimientos()
+            ->where('estado', 'ACTIVO')->where('tipo', 'RETIRO')->sum('monto'), 2);
         $montoApertura = round((float) $caja->monto_apertura, 2);
 
         return [
             'monto_apertura' => $montoApertura,
             'ingresos_efectivo' => $totalEfectivo,
-            'monto_esperado' => round($montoApertura + $totalEfectivo, 2),
+            'ingresos_movimientos' => $ingresosMovimientos,
+            'retiros_movimientos' => $retirosMovimientos,
+            'monto_esperado' => round($montoApertura + $totalEfectivo + $ingresosMovimientos - $retirosMovimientos, 2),
             'cantidad_pagos_efectivo' => $caja->pagos()->count(),
         ];
     }
