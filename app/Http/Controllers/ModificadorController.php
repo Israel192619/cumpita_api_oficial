@@ -14,7 +14,10 @@ class ModificadorController extends Controller
      */
     public function index()
     {
-        $modificadores = Modificador::withCount('opciones')->with('opciones')->latest()->get();
+        $modificadores = Modificador::withCount('opciones')
+            ->with(['opciones', 'estacion:id,nombre,codigo,activa'])
+            ->latest()
+            ->get();
         return response()->json([
             'modificadores' => $modificadores,
             'message' => 'Modificadores obtenidos exitosamente.'
@@ -31,6 +34,7 @@ class ModificadorController extends Controller
             'tipo' => 'required|in:unico,multiple',
             'requerido' => 'required|boolean',
             'activo' => 'required|boolean',
+            'estacion_id' => 'nullable|integer|exists:estaciones_trabajo,id',
 
             // Validación estricta del array de opciones
             'opciones' => 'required|array|min:1',
@@ -47,12 +51,13 @@ class ModificadorController extends Controller
                     'tipo' => $validatedData['tipo'],
                     'requerido' => $validatedData['requerido'],
                     'activo' => $validatedData['activo'] ?? true,
+                    'estacion_id' => $validatedData['estacion_id'] ?? null,
                 ]);
 
                 // 2. Crear las opciones hijas (inyecta automáticamente el modificador_id)
                 $nuevoModificador->opciones()->createMany($validatedData['opciones']);
 
-                return $nuevoModificador->load('opciones');
+                return $nuevoModificador->load(['opciones', 'estacion:id,nombre,codigo,activa']);
             });
 
             return response()->json([
@@ -76,7 +81,7 @@ class ModificadorController extends Controller
     public function show(Modificador $modificadore)
     {
         return response()->json([
-            'modificador' => $modificadore->load('opciones'),
+            'modificador' => $modificadore->load(['opciones', 'estacion:id,nombre,codigo,activa']),
             'message' => 'Modificador obtenido exitosamente.'
         ], 200);
     }
@@ -91,6 +96,7 @@ class ModificadorController extends Controller
             'tipo' => 'required|in:unico,multiple',
             'requerido' => 'required|boolean',
             'activo' => 'required|boolean',
+            'estacion_id' => 'nullable|integer|exists:estaciones_trabajo,id',
             
             // El 'id' de la opción es opcional; si viene, debe existir en la BD
             'opciones' => 'required|array|min:1',
@@ -108,6 +114,7 @@ class ModificadorController extends Controller
                     'tipo' => $data['tipo'],
                     'requerido' => $data['requerido'],
                     'activo' => $data['activo'],
+                    'estacion_id' => $data['estacion_id'] ?? null,
                 ]);
 
                 $opcionesIdsEnviadas = [];
@@ -133,7 +140,7 @@ class ModificadorController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Modificador y opciones actualizados correctamente.',
-                'data' => $modificadore->load('opciones')
+                'data' => $modificadore->load(['opciones', 'estacion:id,nombre,codigo,activa'])
             ], 200);
 
         } catch (\Exception $e) {
