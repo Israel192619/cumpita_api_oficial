@@ -21,8 +21,7 @@ class PuestoCocinaOrdenListaEvent implements ShouldBroadcast
         public string $nuevoEstado,
         public User $actor,
     ) {
-        $this->puesto->loadMissing(['usuario', 'orden']);
-        $this->orden->loadMissing(['detalles.producto.categoria', 'detalles.estacion']);
+        $this->puesto->loadMissing(['usuario:id,name', 'orden:id,numero_orden']);
     }
 
     public function broadcastOn(): array
@@ -49,7 +48,7 @@ class PuestoCocinaOrdenListaEvent implements ShouldBroadcast
                 'user_id' => $this->puesto->user_id,
                 'user_nombre' => $this->puesto->usuario?->name,
             ],
-            'orden' => $this->orden->toArray(),
+            'orden_id' => $this->orden->id,
             'nuevo_estado' => $this->nuevoEstado,
             'actor' => [
                 'id' => $this->actor->id,

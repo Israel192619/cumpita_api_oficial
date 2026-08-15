@@ -6,6 +6,11 @@ use Illuminate\Database\Eloquent\Model;
 
 class OrdenDetalle extends Model
 {
+    protected static function booted(): void
+    {
+        static::saved(fn (OrdenDetalle $detalle) => app(\App\Services\KdsEstacionService::class)->sincronizarDetalle($detalle));
+    }
+
     protected $table = 'orden_detalles'; 
 
     protected $fillable = [
@@ -54,6 +59,11 @@ class OrdenDetalle extends Model
     public function estacion()
     {
         return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
+    }
+
+    public function estadosEstacion()
+    {
+        return $this->hasMany(OrdenDetalleEstacion::class, 'orden_detalle_id');
     }
 
     public function historialCambios()

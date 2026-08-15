@@ -16,11 +16,8 @@ class PuestoCocinaOrdenAsignadaEvent implements ShouldBroadcast
     public function __construct(public PuestoEstacion $puesto)
     {
         $this->puesto->loadMissing([
-            'usuario',
-            'orden.cliente',
-            'orden.mesa',
-            'orden.detalles.producto.categoria',
-            'orden.detalles.estacion',
+            'usuario:id,name',
+            'orden:id,numero_orden',
         ]);
     }
 
@@ -44,7 +41,6 @@ class PuestoCocinaOrdenAsignadaEvent implements ShouldBroadcast
             'orden_id' => $this->puesto->orden_id,
             'orden_estado_cocina' => $this->puesto->orden_estado_cocina,
             'orden_numero' => $this->puesto->orden?->numero_orden,
-            'orden' => $this->puesto->orden?->toArray(),
             'ocupado' => $this->puesto->user_id !== null,
             'user_id' => $this->puesto->user_id,
             'user_nombre' => $this->puesto->usuario?->name,

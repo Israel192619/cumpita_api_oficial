@@ -35,6 +35,11 @@ class EstacionTrabajo extends Model
         return $this->hasMany(OrdenDetalle::class, 'estacion_id');
     }
 
+    public function estadosKds()
+    {
+        return $this->hasMany(OrdenDetalleEstacion::class, 'estacion_id');
+    }
+
     public function puestos()
     {
         return $this->hasMany(PuestoEstacion::class, 'estacion_id');

@@ -52,6 +52,8 @@ Route::middleware('jwt')->group(function () {
     Route::get('cocina/pedidos', [CocinaController::class, 'pedidos']);
     Route::get('cocina/control', [PuestoEstacionController::class, 'control']);
     Route::patch('cocina/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
+    Route::get('kds/pedidos', [CocinaController::class, 'pedidos']);
+    Route::patch('kds/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
     Route::get('cocina/monitor/puestos', [PuestoEstacionController::class, 'index']);
     Route::post('cocina/control/puestos/{puesto}/ocupar', [PuestoEstacionController::class, 'ocupar']);
     Route::post('cocina/control/puestos/{puesto}/liberar', [PuestoEstacionController::class, 'liberar']);

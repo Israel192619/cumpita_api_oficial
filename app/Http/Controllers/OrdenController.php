@@ -15,6 +15,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class OrdenController extends Controller
 {
@@ -171,7 +172,7 @@ class OrdenController extends Controller
 
             DB::commit();
 
-            event(new OrdenCreadaEvent($orden));
+            $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
 
             // Intentar asignación automática tras crear la orden
             try {
@@ -185,7 +186,9 @@ class OrdenController extends Controller
                 'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
             ], 201);
         } catch (\Exception $e) {
-            DB::rollBack();
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
             return response()->json([
                 'message' => 'Error al crear la orden',
                 'error' => $e->getMessage()
@@ -322,7 +325,11 @@ class OrdenController extends Controller
             });
 
             // El evento se emite fuera de la transacción: Reverb solo ve cambios confirmados.
-            event(new OrdenCocinaActualizadaEvent($ordenActualizada, $historialIds));
+            $this->emitirEventoSeguro(
+                new OrdenCocinaActualizadaEvent($ordenActualizada, $historialIds),
+                'orden_actualizada',
+                $ordenActualizada->id
+            );
 
             return response()->json([
                 'message' => 'Orden actualizada exitosamente',
@@ -339,6 +346,20 @@ class OrdenController extends Controller
                 'message' => 'Error al actualizar la orden',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    /** El broadcasting es complementario: nunca invalida una escritura ya confirmada. */
+    private function emitirEventoSeguro(object $evento, string $tipo, int $ordenId): void
+    {
+        try {
+            event($evento);
+        } catch (\Throwable $e) {
+            Log::warning('No se pudo publicar la notificación en tiempo real de la orden.', [
+                'tipo' => $tipo,
+                'orden_id' => $ordenId,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

@@ -6,6 +6,16 @@ use Illuminate\Database\Eloquent\Model;
 
 class OrdenDetalleOpcion extends Model
 {
+    protected static function booted(): void
+    {
+        $sincronizar = function (OrdenDetalleOpcion $opcion): void {
+            $detalle = $opcion->detalleOrden()->first();
+            if ($detalle) app(\App\Services\KdsEstacionService::class)->sincronizarDetalle($detalle);
+        };
+        static::saved($sincronizar);
+        static::deleted($sincronizar);
+    }
+
     protected $table = 'orden_detalle_opciones';
 
     protected $fillable = [

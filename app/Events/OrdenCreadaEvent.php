@@ -6,26 +6,22 @@ use App\Models\Orden;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Contracts\Events\ShouldDispatchAfterCommit;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class OrdenCreadaEvent implements ShouldBroadcast
+class OrdenCreadaEvent implements ShouldBroadcast, ShouldDispatchAfterCommit
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     /**
      * Create a new event instance.
      */
-    public Orden $orden;
+    public int $ordenId;
 
     public function __construct(Orden $orden)
     {
-        $this->orden = $orden->loadMissing([
-            'cliente:id,nombre',
-            'mesa:id,numero',
-            'detalles.producto.categoria',
-            'detalles.estacion',
-        ]);
+        $this->ordenId = (int) $orden->getKey();
     }
 
     /**
@@ -46,10 +42,10 @@ class OrdenCreadaEvent implements ShouldBroadcast
     }
 
     /**
-     * El KDS recibe la orden completa, sin requerir una consulta adicional.
+     * El consumidor vuelve a consultar su proyección; no se serializan relaciones.
      */
     public function broadcastWith(): array
     {
-        return ['orden' => $this->orden->toArray()];
+        return ['tipo' => 'orden_creada', 'orden_id' => $this->ordenId];
     }
 }
