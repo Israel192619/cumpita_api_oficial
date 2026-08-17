@@ -17,6 +17,7 @@ use App\Http\Controllers\OrdenController;
 use App\Http\Controllers\PagoOrdenController;
 use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,8 @@ Route::get('/', function () {
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
+Route::get('/acceso-rapido/meseros', [AuthController::class, 'meserosAccesoRapido'])->middleware('throttle:30,1');
+Route::post('/acceso-rapido/pin', [AuthController::class, 'loginPin'])->middleware('throttle:10,1');
 Route::post('/olvide-mi-contrasena', [ReestablecerContrasenaController::class, 'olvideMiContrasena']);
 Route::post('/reestablecer-contrasena', [ReestablecerContrasenaController::class, 'reestablecerContrasena']);
 
@@ -71,4 +74,10 @@ Route::middleware('jwt')->group(function () {
     Route::apiResource('movimientos-caja', MovimientoCajaController::class)->only(['index', 'store']);
     Route::post('gastos-caja/{gasto}/anular', [GastoCajaController::class, 'anular']);
     Route::apiResource('gastos-caja', GastoCajaController::class)->only(['index', 'store']);
+    Route::get('servicio/fichas', [ServicioController::class, 'index']);
+    Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
+    Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);
+    Route::post('servicio/fichas/{orden}/liberar', [ServicioController::class, 'liberar']);
+    Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);
+    Route::post('servicio/fichas/{orden}/entregar', [ServicioController::class, 'entregar']);
 });

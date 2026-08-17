@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\Role;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -33,6 +34,7 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8',
+            'pin' => 'nullable|digits_between:4,6',
             'role_id' => 'required|exists:roles,id',
             'estacion_id' => [
                 'nullable',
@@ -50,10 +52,13 @@ class UserController extends Controller
         DB::beginTransaction();
         
         try{
+            $esMesero = Role::whereKey($request->role_id)
+                ->whereRaw('LOWER(nombre) = ?', ['mesero'])->exists();
             $user = User::create([
                 'name' => $request->name,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
+                'pin' => $esMesero && $request->filled('pin') ? Hash::make($request->pin) : null,
                 'role_id' => $request->role_id,
                 'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : null,
             ]);
@@ -106,6 +111,7 @@ class UserController extends Controller
             'name' => 'required|string|max:255',
             'email' => "required|email|unique:users,email,$id",
             'password' => 'nullable|min:8',
+            'pin' => 'nullable|digits_between:4,6',
             'role_id' => 'required|exists:roles,id',
             'estacion_id' => [
                 'nullable',
@@ -135,10 +141,17 @@ class UserController extends Controller
                 'role_id' => $request->role_id,
                 'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : $user->estacion_id,
             ]);
+            $esMesero = Role::whereKey($request->role_id)
+                ->whereRaw('LOWER(nombre) = ?', ['mesero'])->exists();
             if ($request->filled('password')) {
                 $user->update([
                     'password' => Hash::make($request->password),
                 ]);
+            }
+            if (!$esMesero) {
+                $user->update(['pin' => null]);
+            } elseif ($request->filled('pin')) {
+                $user->update(['pin' => Hash::make($request->pin)]);
             }
             $profile = $user->perfilUsuarios;
             if ($request->hasFile('avatar')) {

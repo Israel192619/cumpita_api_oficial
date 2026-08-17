@@ -2,16 +2,21 @@
 
 namespace App\Http\Controllers\Auth;
 
+use App\Events\ServicioSesionActualizadaEvent;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Tymon\JWTAuth\Exceptions\JWTException;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class AuthController extends Controller
 {
+    private const SERVICIO_TTL_MINUTOS = 720;
+
     public function register(Request $request)
     {
         $request->validate([
@@ -56,6 +61,58 @@ class AuthController extends Controller
             'token' => $token,
             'expires_in' => $auth->factory()->getTTL() * 60
         ]);
+    }
+
+    public function meserosAccesoRapido()
+    {
+        return response()->json([
+            'meseros' => User::whereHas('role', fn ($query) => $query->whereRaw('LOWER(nombre) = ?', ['mesero']))
+                ->whereNotNull('pin')
+                ->with('perfilUsuarios:id,user_id,avatar')
+                ->orderBy('name')
+                ->get(['id', 'name']),
+        ]);
+    }
+
+    public function loginPin(Request $request)
+    {
+        $data = $request->validate([
+            'user_id' => ['required', 'integer', 'exists:users,id'],
+            'pin' => ['required', 'digits_between:4,6'],
+        ]);
+        $user = User::whereKey($data['user_id'])
+            ->whereHas('role', fn ($query) => $query->whereRaw('LOWER(nombre) = ?', ['mesero']))
+            ->first();
+
+        if (!$user || !$user->pin || !Hash::check($data['pin'], $user->pin)) {
+            return response()->json(['message' => 'PIN incorrecto.'], 401);
+        }
+
+        $sessionId = (string) Str::uuid();
+        JWTAuth::factory()->setTTL(self::SERVICIO_TTL_MINUTOS);
+        $token = JWTAuth::claims([
+            'scope' => 'servicio',
+            'session_id' => $sessionId,
+        ])->fromUser($user);
+        $this->notificarSesion('sesion_iniciada', $user->id, $sessionId);
+
+        return response()->json([
+            'token' => $token,
+            'session_id' => $sessionId,
+            'expires_in' => self::SERVICIO_TTL_MINUTOS * 60,
+            'user' => $user->load(['role', 'perfilUsuarios']),
+        ]);
+    }
+
+    private function notificarSesion(string $tipo, int $userId, string $sessionId): void
+    {
+        try {
+            event(new ServicioSesionActualizadaEvent($tipo, $userId, $sessionId));
+        } catch (\Throwable $e) {
+            Log::warning('No se pudo notificar la sesión de Servicio.', [
+                'tipo' => $tipo, 'user_id' => $userId, 'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function logout()

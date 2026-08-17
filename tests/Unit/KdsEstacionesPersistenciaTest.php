@@ -6,6 +6,8 @@ use App\Models\Modificador;
 use App\Models\ModificadorOpcion;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
+use App\Models\Orden;
+use App\Http\Controllers\CocinaController;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -70,5 +72,55 @@ class KdsEstacionesPersistenciaTest extends TestCase
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle1->id, 'estacion_id' => 1]);
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle1->id, 'estacion_id' => 2]);
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle2->id, 'estacion_id' => 1]);
+    }
+
+    public function test_cocina_desbloquea_solo_la_guarnicion_del_pescado_terminado(): void
+    {
+        $pescado = \App\Models\Producto::create(['nombre' => 'Pescado', 'estacion_id' => 2]);
+        $guarnicion = Modificador::create([
+            'nombre' => 'Guarnición', 'estacion_id' => 1, 'tipo' => 'unico',
+            'requerido' => true, 'activo' => true,
+        ]);
+        $opciones = collect(['Mote', 'Papa', 'Ensalada'])->map(fn ($nombre) => ModificadorOpcion::create([
+            'modificador_id' => $guarnicion->id, 'nombre' => $nombre,
+            'precio_extra' => 0, 'activo' => true,
+        ]));
+
+        $detalles = $opciones->map(function ($opcion) use ($pescado) {
+            $detalle = OrdenDetalle::create([
+                'orden_id' => 125, 'producto_id' => $pescado->id, 'estacion_id' => 2,
+                'cantidad' => 1, 'precio_unitario' => 60, 'estado_cocina' => 'pendiente',
+            ]);
+            OrdenDetalleOpcion::create([
+                'orden_detalle_id' => $detalle->id,
+                'modificador_opcion_id' => $opcion->id,
+                'precio_extra' => 0,
+            ]);
+            return $detalle;
+        });
+
+        $detalles->first()->estadosEstacion()->where('estacion_id', 2)->update(['estado' => 'servido']);
+        $detalles = OrdenDetalle::with([
+            'producto', 'estadosEstacion', 'opciones.modificadorOpcion.modificador',
+        ])->whereIn('id', $detalles->pluck('id'))->get();
+        $detalles->each(fn ($detalle) => $detalle->producto->setAppends([]));
+        $orden = new Orden(['numero_orden' => 125, 'estado' => 'preparando']);
+        $orden->id = 125;
+        $orden->setAppends([]);
+        $orden->setRelation('detalles', $detalles);
+
+        $metodo = new \ReflectionMethod(CocinaController::class, 'proyectarOrden');
+        $resultado = $metodo->invoke(new CocinaController(), $orden, 1, ['pendiente', 'en_preparacion', 'listo_para_recoger']);
+
+        $this->assertCount(3, $resultado['detalles']);
+        $this->assertSame($detalles->first()->id, $resultado['detalles'][0]['id']);
+        $this->assertFalse($resultado['detalles'][0]['bloqueado']);
+        $this->assertTrue($resultado['detalles'][0]['listo_para_atender']);
+        $this->assertSame('Mote', $resultado['detalles'][0]['opciones'][0]['modificador_opcion']['nombre']);
+        $this->assertTrue($resultado['detalles'][1]['bloqueado']);
+        $this->assertFalse($resultado['detalles'][1]['listo_para_atender']);
+        $this->assertSame('Papa', $resultado['detalles'][1]['opciones'][0]['modificador_opcion']['nombre']);
+        $this->assertTrue($resultado['detalles'][2]['bloqueado']);
+        $this->assertSame('Ensalada', $resultado['detalles'][2]['opciones'][0]['modificador_opcion']['nombre']);
     }
 }

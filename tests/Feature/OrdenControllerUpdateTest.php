@@ -8,6 +8,7 @@ use App\Models\Mesa;
 use App\Models\Orden;
 use App\Models\Producto;
 use App\Models\User;
+use App\Models\EstacionTrabajo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
@@ -32,8 +33,12 @@ class OrdenControllerUpdateTest extends TestCase
             'nombre' => 'Bebidas',
             'descripcion' => 'Test',
         ]);
+        $estacion = EstacionTrabajo::create([
+            'nombre' => 'Cocina', 'codigo' => 'COCINA', 'activa' => true, 'orden' => 1,
+        ]);
         $producto = Producto::create([
             'categoria_id' => $categoria->id,
+            'estacion_id' => $estacion->id,
             'nombre' => 'Cerveza',
             'descripcion' => 'Test',
             'precio' => 12000,
@@ -45,6 +50,7 @@ class OrdenControllerUpdateTest extends TestCase
 
         $orden = Orden::create([
             'user_id' => $user->id,
+            'numero_orden' => 1,
             'cliente_id' => $cliente->id,
             'mesa_id' => $mesa->id,
             'fecha_orden' => '2026-07-08 10:00:00',
@@ -62,7 +68,7 @@ class OrdenControllerUpdateTest extends TestCase
             'cliente_id' => $cliente->id,
             'mesa_id' => $mesa->id,
             'tipo_orden' => 'delivery',
-            'fecha_orden' => '2026-07-08T14:30',
+            'fecha_orden' => '2026-07-08T14:30:00',
             'subtotal' => 24000,
             'descuento' => 2000,
             'total' => 22000,
@@ -96,10 +102,11 @@ class OrdenControllerUpdateTest extends TestCase
             'total' => '22000.00',
         ]);
 
+        $this->assertDatabaseCount('orden_detalles', 2);
         $this->assertDatabaseHas('orden_detalles', [
             'orden_id' => $orden->id,
             'producto_id' => $producto->id,
-            'cantidad' => 2,
+            'cantidad' => 1,
             'nota' => 'Sin hielo',
         ]);
     }

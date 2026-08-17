@@ -12,8 +12,8 @@ use Illuminate\Notifications\Notifiable;
 use Tymon\JWTAuth\Contracts\JWTSubject;
 
 
-#[Fillable(['name', 'username', 'email', 'password', 'role_id', 'estacion_id'])]
-#[Hidden(['password', 'remember_token'])]
+#[Fillable(['name', 'username', 'email', 'password', 'pin', 'role_id', 'estacion_id'])]
+#[Hidden(['password', 'pin', 'remember_token'])]
 class User extends Authenticatable implements JWTSubject
 {
     /** @use HasFactory<UserFactory> */
@@ -74,5 +74,10 @@ class User extends Authenticatable implements JWTSubject
     public function historialCambiosOrden()
     {
         return $this->hasMany(HistorialCambioOrden::class, 'user_id');
+    }
+
+    public function fichasServicio()
+    {
+        return $this->hasMany(Orden::class, 'mesero_id');
     }
 }

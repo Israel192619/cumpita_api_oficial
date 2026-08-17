@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\OrdenCreadaEvent;
+use App\Events\ServicioSesionActualizadaEvent;
 use App\Models\Orden;
 use PHPUnit\Framework\TestCase;
 
@@ -29,5 +30,15 @@ class OrdenBroadcastPayloadTest extends TestCase
 
         $this->assertSame(['tipo' => 'orden_actualizada', 'orden_id' => 125], $payload);
         $this->assertLessThan(100, strlen(json_encode($payload)));
+    }
+
+    public function test_sesion_de_servicio_publica_solo_identificadores_minimos(): void
+    {
+        $payload = (new ServicioSesionActualizadaEvent('sesion_iniciada', 7, 'sesion-123'))->broadcastWith();
+
+        $this->assertSame([
+            'tipo' => 'sesion_iniciada', 'user_id' => 7, 'session_id' => 'sesion-123',
+        ], $payload);
+        $this->assertLessThan(120, strlen(json_encode($payload)));
     }
 }

@@ -148,24 +148,27 @@ class OrdenController extends Controller
                     $producto->save();
                 }
 
-                $ordenDetalle = OrdenDetalle::create([
-                    'orden_id' => $orden->id,
-                    'producto_id' => $item['producto_id'],
-                    'estacion_id' => $producto->estacion_id,
-                    'cantidad' => $item['cantidad'],
-                    'precio_unitario' => $item['precio_unitario'],
-                    'nota' => $item['nota'] ?? null,
-                    'estado_cocina' => 'pendiente',
-                ]);
+                // Cada unidad es un detalle independiente para que Cocina, Parrilla y Servicio
+                // puedan finalizarla sin afectar a las demás unidades del mismo producto.
+                for ($unidad = 0; $unidad < (int) $item['cantidad']; $unidad++) {
+                    $ordenDetalle = OrdenDetalle::create([
+                        'orden_id' => $orden->id,
+                        'producto_id' => $item['producto_id'],
+                        'estacion_id' => $producto->estacion_id,
+                        'cantidad' => 1,
+                        'precio_unitario' => $item['precio_unitario'],
+                        'nota' => $item['nota'] ?? null,
+                        'estado_cocina' => 'pendiente',
+                    ]);
 
-                // Crear opciones del detalle (modificadores)
-                if (isset($item['modificadores']) && is_array($item['modificadores'])) {
-                    foreach ($item['modificadores'] as $modificador) {
-                        OrdenDetalleOpcion::create([
-                            'orden_detalle_id' => $ordenDetalle->id,
-                            'modificador_opcion_id' => $modificador['modificador_opcion_id'],
-                            'precio_extra' => $modificador['precio_extra'] ?? 0,
-                        ]);
+                    if (isset($item['modificadores']) && is_array($item['modificadores'])) {
+                        foreach ($item['modificadores'] as $modificador) {
+                            OrdenDetalleOpcion::create([
+                                'orden_detalle_id' => $ordenDetalle->id,
+                                'modificador_opcion_id' => $modificador['modificador_opcion_id'],
+                                'precio_extra' => $modificador['precio_extra'] ?? 0,
+                            ]);
+                        }
                     }
                 }
             }
@@ -366,6 +369,22 @@ class OrdenController extends Controller
     /** Compara los detalles persistidos con el payload del POS sin recrearlos. */
     private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): void
     {
+        // El POS puede enviar una línea con cantidad mayor a uno. Internamente cada unidad
+        // debe conservar su propio detalle para que su producción y entrega sean independientes.
+        $items = collect($items)->flatMap(function (array $item) {
+            $cantidad = max(1, (int) $item['cantidad']);
+
+            return collect(range(0, $cantidad - 1))->map(function (int $unidad) use ($item) {
+                $unidadItem = $item;
+                $unidadItem['cantidad'] = 1;
+                if ($unidad > 0) {
+                    unset($unidadItem['orden_detalle_id']);
+                }
+
+                return $unidadItem;
+            });
+        })->values()->all();
+
         $detallesExistentes = $orden->detalles()
             ->with(['producto', 'estacion', 'opciones'])
             ->lockForUpdate()

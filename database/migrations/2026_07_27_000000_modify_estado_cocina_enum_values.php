@@ -10,8 +10,12 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // SQLite representa enum como texto y no admite ALTER ... MODIFY.
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
         // Ampliar los valores permitidos para estado_cocina sin cambiar el nombre de columna.
-        // Se usa SQL directo para mayor compatibilidad con ENUM en MySQL/Postgres.
+        // En producción MySQL se conserva el ENUM existente.
         DB::statement("ALTER TABLE `orden_detalles` MODIFY `estado_cocina` ENUM('pendiente','en_preparacion','listo_para_recoger','recogido','servido') NOT NULL DEFAULT 'pendiente'");
     }
 
@@ -20,6 +24,9 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
         // Volver al conjunto anterior de valores (pendiente, servido).
         DB::statement("ALTER TABLE `orden_detalles` MODIFY `estado_cocina` ENUM('pendiente','servido') NOT NULL DEFAULT 'pendiente'");
     }

@@ -9,6 +9,9 @@ class Orden extends Model
     protected $table = 'ordenes'; 
     protected $fillable = [
         'user_id',
+        'mesero_id',
+        'tomada_en',
+        'entregada_en',
         'cliente_id',
         'mesa_id',
         'fecha_orden',
@@ -32,6 +35,8 @@ class Orden extends Model
         'estado' => 'string',
         'estado_pago' => 'string',
         'tipo_orden' => 'string',
+        'tomada_en' => 'datetime',
+        'entregada_en' => 'datetime',
     ];
 
     protected $appends = ['cliente_nombre', 'cliente_telefono', 'saldo_pendiente'];
@@ -42,6 +47,11 @@ class Orden extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function mesero()
+    {
+        return $this->belongsTo(User::class, 'mesero_id');
     }
 
     /**

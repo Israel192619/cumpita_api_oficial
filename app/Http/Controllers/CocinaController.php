@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 
 class CocinaController extends Controller
 {
+    private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
     public function pedidos(Request $request, KdsEstacionService $kds)
     {
         $fecha = $request->input('fecha', now()->toDateString());
@@ -63,7 +64,7 @@ class CocinaController extends Controller
             ]);
 
             $estados = $detalle->estadosEstacion()->pluck('estado');
-            $completo = $estados->isNotEmpty() && $estados->every(fn ($valor) => $valor === 'servido');
+            $completo = $estados->isNotEmpty() && $estados->every(fn ($valor) => in_array($valor, self::ESTADOS_LISTOS, true));
             $detalle->update([
                 'estado_cocina' => $completo ? 'servido' : 'pendiente',
                 'fecha_servido' => $completo ? now() : null,
@@ -124,10 +125,17 @@ class CocinaController extends Controller
         $data['detalles'] = $orden->detalles->map(function (OrdenDetalle $detalle) use ($estacionId, $activos) {
             $estado = $detalle->estadosEstacion->firstWhere('estacion_id', $estacionId);
             if (!$estado || !in_array($estado->estado, $activos, true)) return null;
+            $bloqueado = false;
+            if ((int) $detalle->estacion_id !== $estacionId) {
+                $estadoPrincipal = $detalle->estadosEstacion->firstWhere('estacion_id', (int) $detalle->estacion_id);
+                $bloqueado = $estadoPrincipal && !in_array($estadoPrincipal->estado, self::ESTADOS_LISTOS, true);
+            }
             $detalleData = $detalle->toArray();
             $detalleData['estado_cocina'] = $estado->estado;
             $detalleData['estado_estacion_id'] = $estado->id;
             $detalleData['incluye_producto'] = (int) $detalle->estacion_id === $estacionId;
+            $detalleData['bloqueado'] = $bloqueado;
+            $detalleData['listo_para_atender'] = !$bloqueado && (int) $detalle->estacion_id !== $estacionId;
             $detalleData['opciones'] = $detalle->opciones
                 ->filter(fn ($opcion) => (int) ($opcion->modificadorOpcion?->modificador?->estacion_id ?? 0) === $estacionId)
                 ->values()->toArray();
