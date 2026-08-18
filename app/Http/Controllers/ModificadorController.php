@@ -32,7 +32,7 @@ class ModificadorController extends Controller
         $validatedData = $request->validate([
             'nombre' => 'required|string|max:255',
             'tipo' => 'required|in:unico,multiple',
-            'requerido' => 'required|boolean',
+            'requerido' => 'sometimes|boolean',
             'activo' => 'required|boolean',
             'estacion_id' => 'nullable|integer|exists:estaciones_trabajo,id',
 
@@ -49,7 +49,7 @@ class ModificadorController extends Controller
                 $nuevoModificador = Modificador::create([
                     'nombre' => $validatedData['nombre'],
                     'tipo' => $validatedData['tipo'],
-                    'requerido' => $validatedData['requerido'],
+                    'requerido' => false,
                     'activo' => $validatedData['activo'] ?? true,
                     'estacion_id' => $validatedData['estacion_id'] ?? null,
                 ]);
@@ -94,7 +94,7 @@ class ModificadorController extends Controller
         $data = $request->validate([
             'nombre' => 'required|string|max:255',
             'tipo' => 'required|in:unico,multiple',
-            'requerido' => 'required|boolean',
+            'requerido' => 'sometimes|boolean',
             'activo' => 'required|boolean',
             'estacion_id' => 'nullable|integer|exists:estaciones_trabajo,id',
             
@@ -112,7 +112,7 @@ class ModificadorController extends Controller
                 $modificadore->update([
                     'nombre' => $data['nombre'],
                     'tipo' => $data['tipo'],
-                    'requerido' => $data['requerido'],
+                    'requerido' => false,
                     'activo' => $data['activo'],
                     'estacion_id' => $data['estacion_id'] ?? null,
                 ]);

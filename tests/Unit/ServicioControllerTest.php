@@ -173,6 +173,15 @@ class ServicioControllerTest extends TestCase
 
         $this->assertSame([$activada->id], collect($tablero['disponibles'])->pluck('id')->all());
         $this->assertNotContains($programada->id, collect($tablero['disponibles'])->pluck('id')->all());
+        $this->assertSame([$programada->id], collect($tablero['preordenes_programadas'])->pluck('id')->all());
+        $this->assertTrue($tablero['preordenes_programadas'][0]['bloqueada']);
+
+        try {
+            (new ServicioController())->tomar($programada);
+            $this->fail('Una preorden programada no debe poder tomarse antes de activarla.');
+        } catch (HttpExceptionInterface $e) {
+            $this->assertSame(422, $e->getStatusCode());
+        }
     }
 
     public function test_cerrar_servicio_desde_celular_no_invalida_el_jwt_principal(): void

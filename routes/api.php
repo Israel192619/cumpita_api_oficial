@@ -8,15 +8,18 @@ use App\Http\Controllers\EstacionTrabajoController;
 use App\Http\Controllers\GastoCajaController;
 use App\Http\Controllers\ClienteController;
 use App\Http\Controllers\CocinaController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\HistorialCambioOrdenController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
 use App\Http\Controllers\MovimientoCajaController;
 use App\Http\Controllers\PuestoEstacionController;
 use App\Http\Controllers\OrdenController;
+use App\Http\Controllers\OrdenAdicionalController;
 use App\Http\Controllers\PagoOrdenController;
 use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\ReporteController;
 use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -40,6 +43,10 @@ Route::middleware('jwt')->group(function () {
     Route::get('/me', [AuthController::class, 'getUser']);
 
     Route::middleware('access:admin')->group(function () {
+        Route::get('dashboard', [DashboardController::class, 'index']);
+        Route::get('reportes/ventas', [ReporteController::class, 'ventas']);
+        Route::get('reportes/productos', [ReporteController::class, 'productos']);
+        Route::get('reportes/caja', [ReporteController::class, 'caja']);
         Route::apiResource('roles', RoleController::class);
         Route::apiResource('users', UserController::class);
         Route::apiResource('estaciones-trabajo', EstacionTrabajoController::class);
@@ -49,16 +56,25 @@ Route::middleware('jwt')->group(function () {
         Route::apiResource('mesas', MesaController::class)->except(['index', 'show']);
     });
 
-    Route::middleware('access:pos')->group(function () {
-        Route::apiResource('categorias', CategoriaController::class)->only(['index', 'show']);
-        Route::apiResource('productos', ProductoController::class)->only(['index', 'show']);
-        Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
-        Route::apiResource('mesas', MesaController::class)->only(['index', 'show']);
+    Route::middleware('access:captura-preorden')->group(function () {
+        Route::get('categorias', [CategoriaController::class, 'index']);
+        Route::get('categorias/{categoria}', [CategoriaController::class, 'show']);
+        Route::get('productos', [ProductoController::class, 'index']);
+        Route::get('productos/{producto}', [ProductoController::class, 'show']);
+        Route::get('mesas', [MesaController::class, 'index']);
         Route::get('clientes/search', [ClienteController::class, 'search']);
-        Route::apiResource('clientes', ClienteController::class);
+        Route::post('clientes', [ClienteController::class, 'store']);
+        Route::post('ordenes', [OrdenController::class, 'store']);
+        Route::get('ordenes/{orden}', [OrdenController::class, 'show']);
+        Route::match(['put', 'patch'], 'ordenes/{orden}', [OrdenController::class, 'update']);
+    });
+
+    Route::middleware('access:pos')->group(function () {
+        Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
+        Route::apiResource('clientes', ClienteController::class)->except(['store']);
         Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
         Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
-        Route::apiResource('ordenes', OrdenController::class);
+        Route::apiResource('ordenes', OrdenController::class)->only(['index', 'destroy']);
         Route::apiResource('pagos-ordenes', PagoOrdenController::class);
     });
 
@@ -93,6 +109,9 @@ Route::middleware('jwt')->group(function () {
     });
 
     Route::middleware('access:servicio')->group(function () {
+        Route::get('servicio/ordenes/buscar', [OrdenAdicionalController::class, 'buscar']);
+        Route::get('servicio/ordenes/{orden}', [OrdenAdicionalController::class, 'show']);
+        Route::post('servicio/ordenes/{orden}/adicionales', [OrdenAdicionalController::class, 'store']);
         Route::get('servicio/fichas', [ServicioController::class, 'index']);
         Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
         Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);

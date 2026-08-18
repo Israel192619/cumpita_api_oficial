@@ -38,8 +38,18 @@ class CocinaController extends Controller
             ->map(fn (Orden $orden) => $this->proyectarOrden($orden, $estacion->id, $activos))
             ->filter(fn (array $orden) => count($orden['detalles']) > 0)->values();
 
+        $preordenes = Orden::with([
+            'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
+            'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
+        ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            ->whereDate('fecha_programada', $fecha)
+            ->orderBy('fecha_programada')->get()
+            ->map(fn (Orden $orden) => $this->proyectarPreorden($orden, $estacion->id))
+            ->filter(fn (array $orden) => count($orden['detalles']) > 0)->values();
+
         return response()->json([
             'ordenes' => $ordenes,
+            'preordenes_programadas' => $preordenes,
             'estacion' => $estacion->only(['id', 'nombre', 'codigo']),
             'estaciones_disponibles' => $this->estacionesDisponibles(),
         ]);
@@ -52,6 +62,9 @@ class CocinaController extends Controller
             'estado_cocina' => ['required', 'in:pendiente,en_preparacion,listo_para_recoger,recogido,servido'],
         ]);
         $estacion = $this->resolverEstacion($request, (int) $data['estacion_id']);
+
+        $detalle->loadMissing('orden');
+        abort_if($detalle->orden?->esPreordenProgramada(), 422, 'La preorden está pendiente de activación y no puede procesarse.');
 
         $resultado = DB::transaction(function () use ($detalle, $data, $estacion, $kds) {
             $detalle = OrdenDetalle::lockForUpdate()->findOrFail($detalle->id);
@@ -142,5 +155,31 @@ class CocinaController extends Controller
             return $detalleData;
         })->filter()->values()->all();
         return $data;
+    }
+
+    private function proyectarPreorden(Orden $orden, int $estacionId): array
+    {
+        return [
+            'id' => $orden->id,
+            'numero_orden' => $orden->numero_orden,
+            'fecha_programada' => $orden->fecha_programada,
+            'tipo_orden' => $orden->tipo_orden,
+            'tipo_flujo' => $orden->tipo_flujo,
+            'estado_preorden' => $orden->estado_preorden,
+            'cliente' => $orden->cliente,
+            'mesa' => $orden->mesa,
+            'bloqueada' => true,
+            'detalles' => $orden->detalles->map(function (OrdenDetalle $detalle) use ($estacionId) {
+                $opciones = $detalle->opciones->filter(
+                    fn ($opcion) => (int) ($opcion->modificadorOpcion?->modificador?->estacion_id ?? 0) === $estacionId
+                )->values();
+                if ((int) $detalle->estacion_id !== $estacionId && $opciones->isEmpty()) return null;
+                $data = $detalle->toArray();
+                $data['incluye_producto'] = (int) $detalle->estacion_id === $estacionId;
+                $data['bloqueado'] = true;
+                $data['opciones'] = $opciones->toArray();
+                return $data;
+            })->filter()->values()->all(),
+        ];
     }
 }

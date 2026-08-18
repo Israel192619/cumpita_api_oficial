@@ -141,6 +141,13 @@ class Orden extends Model
         return $this->hasMany(HistorialCambioOrden::class, 'orden_id');
     }
 
+    public function cambiosMesero()
+    {
+        return $this->historialCambios()
+            ->where('tipo_cambio', 'detalle_agregado')
+            ->whereHas('user.role', fn ($query) => $query->whereRaw('LOWER(nombre) = ?', ['mesero']));
+    }
+
     /**
      * Accesores para datos del cliente
      */

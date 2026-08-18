@@ -35,11 +35,18 @@ class ServicioController extends Controller
         $kds->sincronizar($ordenes->pluck('detalles')->flatten());
         $ordenes->load('detalles.estadosEstacion');
 
+        $preordenes = Orden::with([
+            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
+            'detalles.opciones.modificadorOpcion:id,nombre',
+        ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            ->orderBy('fecha_programada')->get();
+
         return response()->json([
             'disponibles' => $ordenes->whereNull('mesero_id')->map(fn ($orden) => $this->ficha($orden))->values(),
             'mis_fichas' => $esMesero
                 ? $ordenes->where('mesero_id', $usuario->id)->map(fn ($orden) => $this->ficha($orden))->values()
                 : [],
+            'preordenes_programadas' => $preordenes->map(fn ($orden) => $this->fichaPreorden($orden))->values(),
         ]);
     }
 
@@ -48,6 +55,7 @@ class ServicioController extends Controller
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($orden, $mesero) {
             $orden = Orden::lockForUpdate()->findOrFail($orden->id);
+            $this->asegurarOrdenOperativa($orden);
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya no está disponible.');
             abort_if($orden->mesero_id && $orden->mesero_id !== $mesero->id, 409, 'Otro mesero ya tomó esta ficha.');
             if (!$orden->mesero_id) $orden->update(['mesero_id' => $mesero->id, 'tomada_en' => now()]);
@@ -62,6 +70,7 @@ class ServicioController extends Controller
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($detalle, $mesero, $kds) {
             $detalle = OrdenDetalle::with('orden')->lockForUpdate()->findOrFail($detalle->id);
+            $this->asegurarOrdenOperativa($detalle->orden);
             abort_unless($detalle->orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
             $kds->sincronizarDetalle($detalle);
             $detalle->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
@@ -77,6 +86,7 @@ class ServicioController extends Controller
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($orden, $mesero) {
             $orden = Orden::lockForUpdate()->findOrFail($orden->id);
+            $this->asegurarOrdenOperativa($orden);
             abort_unless($orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya no puede liberarse.');
             $this->registrarLiberacion($orden, $mesero->id, 'liberacion_manual');
@@ -136,6 +146,7 @@ class ServicioController extends Controller
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($orden, $mesero) {
             $orden = Orden::with('detalles.estadosEstacion')->lockForUpdate()->findOrFail($orden->id);
+            $this->asegurarOrdenOperativa($orden);
             abort_unless($orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
             $todosListos = $orden->detalles->isNotEmpty() && $orden->detalles->every(fn ($detalle) =>
                 $detalle->estadosEstacion->isNotEmpty()
@@ -170,6 +181,34 @@ class ServicioController extends Controller
             'listos' => $detalles->where('listo', true)->count(), 'total_items' => $detalles->count(),
             'todo_listo' => $detalles->isNotEmpty() && $detalles->every(fn ($detalle) => $detalle['listo']),
         ];
+    }
+
+    private function fichaPreorden(Orden $orden): array
+    {
+        return [
+            'id' => $orden->id,
+            'numero_orden' => $orden->numero_orden,
+            'mesa' => $orden->mesa?->numero,
+            'cliente' => $orden->cliente?->nombre,
+            'tipo_orden' => $orden->tipo_orden,
+            'fecha_programada' => $orden->fecha_programada,
+            'estado_preorden' => $orden->estado_preorden,
+            'detalles' => $orden->detalles->map(fn ($detalle) => [
+                'id' => $detalle->id,
+                'cantidad' => $detalle->cantidad,
+                'producto' => $detalle->producto?->nombre,
+                'nota' => $detalle->nota,
+                'opciones' => $detalle->opciones->pluck('modificadorOpcion.nombre')->filter()->values(),
+                'listo' => false,
+            ])->values(),
+            'total_items' => $orden->detalles->count(),
+            'bloqueada' => true,
+        ];
+    }
+
+    private function asegurarOrdenOperativa(Orden $orden): void
+    {
+        abort_if($orden->esPreordenProgramada(), 422, 'La preorden está pendiente de activación y no puede procesarse.');
     }
 
     private function registrarLiberacion(Orden $orden, int $meseroId, string $motivo): void

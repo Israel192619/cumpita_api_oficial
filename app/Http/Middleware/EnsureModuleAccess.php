@@ -12,6 +12,7 @@ class EnsureModuleAccess
     private const ACCESS = [
         'admin' => [],
         'pos' => ['cajero', 'caja'],
+        'captura-preorden' => ['cajero', 'caja', 'mesero'],
         'caja' => ['cajero', 'caja'],
         'kds' => ['cocinero', 'cocina', 'parrilla'],
         'servicio' => ['mesero', 'despacho'],

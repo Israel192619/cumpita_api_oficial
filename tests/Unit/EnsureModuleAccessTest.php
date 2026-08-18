@@ -26,6 +26,8 @@ class EnsureModuleAccessTest extends TestCase
         $this->assertSame(204, $this->runMiddleware('Cajero', 'caja')->getStatusCode());
         $this->assertSame(204, $this->runMiddleware('Cocinero', 'kds')->getStatusCode());
         $this->assertSame(204, $this->runMiddleware('Mesero', 'servicio')->getStatusCode());
+        $this->assertSame(204, $this->runMiddleware('Mesero', 'captura-preorden')->getStatusCode());
+        $this->assertSame(204, $this->runMiddleware('Cajero', 'captura-preorden')->getStatusCode());
         $this->assertSame(204, $this->runMiddleware('Despacho', 'despacho')->getStatusCode());
     }
 

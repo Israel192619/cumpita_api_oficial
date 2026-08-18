@@ -101,7 +101,7 @@ class Producto extends Model
                     'id' => $modificador->id,
                     'nombre' => $modificador->nombre,
                     'tipo' => $modificador->tipo,          // 'unico' o 'multiple'
-                    'requerido' => $modificador->requerido,
+                    'requerido' => false,
                     'opciones' => $opciones->map(function ($opc) {
                         return [
                             'id' => $opc->id,

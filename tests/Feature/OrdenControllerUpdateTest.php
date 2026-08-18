@@ -10,7 +10,10 @@ use App\Models\Producto;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\EstacionTrabajo;
+use App\Models\OrdenDetalle;
+use App\Events\OrdenCocinaActualizadaEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
@@ -114,5 +117,70 @@ class OrdenControllerUpdateTest extends TestCase
             'cantidad' => 1,
             'nota' => 'Sin hielo',
         ]);
+    }
+
+    public function test_aumentar_cantidad_crea_solo_unidades_nuevas_pendientes(): void
+    {
+        Event::fake([OrdenCocinaActualizadaEvent::class]);
+        $role = Role::create(['nombre' => 'Cajero']);
+        $user = User::factory()->create(['role_id' => $role->id]);
+        $cliente = Cliente::create(['nombre' => 'Cliente cantidad']);
+        $categoria = Categoria::create(['nombre' => 'Parrilla']);
+        $estacion = EstacionTrabajo::create(['nombre' => 'Parrilla', 'codigo' => 'PARRILLA', 'activa' => true, 'orden' => 1]);
+        $producto = Producto::create(['categoria_id' => $categoria->id, 'estacion_id' => $estacion->id,
+            'nombre' => 'Pescado', 'precio' => 40, 'activo' => true, 'maneja_stock' => true, 'stock' => 10, 'stock_minimo' => 1]);
+        $orden = Orden::create(['user_id' => $user->id, 'cliente_id' => $cliente->id, 'numero_orden' => 2,
+            'subtotal' => 40, 'total' => 40, 'estado' => 'listo', 'estado_pago' => 'pendiente']);
+        $detalleListo = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id,
+            'estacion_id' => $estacion->id, 'cantidad' => 1, 'precio_unitario' => 40, 'estado_cocina' => 'servido']);
+        $detalleListo->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'cliente_id' => $cliente->id, 'subtotal' => 80, 'total' => 80,
+            'items' => [[
+                'orden_detalle_id' => $detalleListo->id,
+                'producto_id' => $producto->id,
+                'cantidad' => 2,
+                'precio_unitario' => 40,
+                'modificadores' => [],
+            ]],
+        ])->assertOk();
+
+        $detalles = $orden->detalles()->with('estadosEstacion')->orderBy('id')->get();
+        $this->assertCount(2, $detalles);
+        $this->assertSame('servido', $detalles[0]->estadosEstacion->first()->estado);
+        $this->assertSame('pendiente', $detalles[1]->estadosEstacion->first()->estado);
+        $this->assertSame(1, $detalles[0]->cantidad);
+        $this->assertSame(1, $detalles[1]->cantidad);
+        $this->assertDatabaseHas('productos', ['id' => $producto->id, 'stock' => 9]);
+        $this->assertDatabaseHas('ordenes', ['id' => $orden->id, 'estado' => 'preparando', 'total' => '80.00']);
+        $this->assertDatabaseHas('historial_cambios_orden', ['orden_id' => $orden->id,
+            'orden_detalle_id' => $detalles[1]->id, 'tipo_cambio' => 'detalle_agregado', 'cantidad_nueva' => 1]);
+        Event::assertDispatched(OrdenCocinaActualizadaEvent::class, fn ($event) => $event->ordenId === $orden->id);
+
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'cliente_id' => $cliente->id, 'subtotal' => 80, 'total' => 80,
+            'items' => $detalles->map(fn ($detalle) => ['orden_detalle_id' => $detalle->id,
+                'producto_id' => $producto->id, 'cantidad' => 1, 'precio_unitario' => 40, 'modificadores' => []])->all(),
+        ])->assertOk();
+        $this->assertCount(2, $orden->detalles()->get());
+        $this->assertSame(1, $orden->historialCambios()->where('tipo_cambio', 'detalle_agregado')->count());
+
+        // 2 -> 5: las dos unidades existentes se conservan y nacen exactamente tres.
+        $detalles[1]->update(['estado_cocina' => 'servido']);
+        $detalles[1]->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'cliente_id' => $cliente->id, 'subtotal' => 200, 'total' => 200,
+            'items' => [
+                ['orden_detalle_id' => $detalles[0]->id, 'producto_id' => $producto->id, 'cantidad' => 4, 'precio_unitario' => 40, 'modificadores' => []],
+                ['orden_detalle_id' => $detalles[1]->id, 'producto_id' => $producto->id, 'cantidad' => 1, 'precio_unitario' => 40, 'modificadores' => []],
+            ],
+        ])->assertOk();
+
+        $cinco = $orden->detalles()->with('estadosEstacion')->orderBy('id')->get();
+        $this->assertCount(5, $cinco);
+        $this->assertSame(2, $cinco->filter(fn ($detalle) => $detalle->estadosEstacion->first()?->estado === 'servido')->count());
+        $this->assertSame(3, $cinco->filter(fn ($detalle) => $detalle->estadosEstacion->first()?->estado === 'pendiente')->count());
+        $this->assertDatabaseHas('productos', ['id' => $producto->id, 'stock' => 6]);
     }
 }

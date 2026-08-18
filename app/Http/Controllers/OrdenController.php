@@ -26,6 +26,7 @@ class OrdenController extends Controller
     public function index(Request $request)
     {
         $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
+            ->withMax('cambiosMesero as ultimo_cambio_mesero_en', 'created_at')
             ->when($request->filled('tipo_flujo'), fn ($query) => $query->where('tipo_flujo', $request->input('tipo_flujo')))
             ->when($request->filled('estado_preorden'), fn ($query) => $query->where('estado_preorden', $request->input('estado_preorden')))
             ->orderByDesc('created_at')->get();
@@ -67,6 +68,10 @@ class OrdenController extends Controller
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        if ($this->esMesero()) {
+            abort_unless($request->input('tipo_flujo') === 'preorden', 403, 'El mesero solamente puede registrar preórdenes.');
         }
 
         if (!$request->cliente_id && !$request->cliente_nombre) {
@@ -217,6 +222,7 @@ class OrdenController extends Controller
     public function show(string $id)
     {
         $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
+        $this->autorizarMeseroSobrePreorden($orden);
         
         if (!$orden) {
             return response()->json(['message' => 'Orden no encontrada'], 404);
@@ -266,6 +272,7 @@ class OrdenController extends Controller
             $historialIds = [];
             $ordenActualizada = DB::transaction(function () use ($request, $id, &$historialIds) {
                 $orden = Orden::lockForUpdate()->findOrFail($id);
+                $this->autorizarMeseroSobrePreorden($orden);
                 $usuarioId = auth('api')->id();
                 $estadoAnterior = $orden->estado;
 
@@ -338,7 +345,12 @@ class OrdenController extends Controller
                 }
 
                 if ($request->has('items')) {
-                    $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds);
+                    $huboUnidadesNuevas = $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds);
+                    if ($huboUnidadesNuevas && $orden->estado === 'listo') {
+                        // Una unidad adicional vuelve a abrir trabajo sin tocar los estados
+                        // de las unidades que Cocina/Parrilla ya finalizaron.
+                        $orden->update(['estado' => 'preparando']);
+                    }
                 }
 
                 $pagosTotales = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
@@ -434,7 +446,7 @@ class OrdenController extends Controller
     }
 
     /** Compara los detalles persistidos con el payload del POS sin recrearlos. */
-    private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): void
+    private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): bool
     {
         // El POS puede enviar una línea con cantidad mayor a uno. Internamente cada unidad
         // debe conservar su propio detalle para que su producción y entrega sean independientes.
@@ -458,6 +470,7 @@ class OrdenController extends Controller
             ->get()
             ->keyBy('id');
         $idsRecibidos = [];
+        $huboUnidadesNuevas = false;
 
         foreach ($items as $item) {
             $detalleId = $item['orden_detalle_id'] ?? null;
@@ -538,6 +551,11 @@ class OrdenController extends Controller
                 'nota' => $item['nota'] ?? null,
             ]);
             $this->crearOpcionesDetalle($detalle, $item['modificadores'] ?? []);
+            // OrdenDetalle sincroniza su estación principal al guardarse. Esta segunda
+            // sincronización ocurre con todas las opciones ya persistidas y garantiza
+            // las dependencias de modificadores para la nueva unidad.
+            app(\App\Services\KdsEstacionService::class)->sincronizarDetalle($detalle->fresh());
+            $huboUnidadesNuevas = true;
             $this->registrarCambio(
                 $orden,
                 $detalle,
@@ -563,6 +581,8 @@ class OrdenController extends Controller
                 $detalle->opciones()->delete();
                 $detalle->delete();
             });
+
+        return $huboUnidadesNuevas;
     }
 
     private function ajustarStock(?Producto $producto, int $diferenciaCantidad): void
@@ -652,6 +672,23 @@ class OrdenController extends Controller
             'datos_nuevo' => $datosNuevo,
         ]);
         $historialIds[] = $historial->id;
+    }
+
+    private function esMesero(): bool
+    {
+        return mb_strtolower(auth('api')->user()?->role?->nombre ?? '') === 'mesero';
+    }
+
+    private function autorizarMeseroSobrePreorden(Orden $orden): void
+    {
+        if (!$this->esMesero()) return;
+        abort_unless(
+            $orden->tipo_flujo === 'preorden'
+            && $orden->estado_preorden === 'programada'
+            && (int) $orden->user_id === (int) auth('api')->id(),
+            403,
+            'Solo puedes consultar o editar tus preórdenes programadas.'
+        );
     }
 
     /**
