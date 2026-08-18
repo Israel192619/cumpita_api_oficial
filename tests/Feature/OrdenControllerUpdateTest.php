@@ -7,6 +7,7 @@ use App\Models\Cliente;
 use App\Models\Mesa;
 use App\Models\Orden;
 use App\Models\Producto;
+use App\Models\Role;
 use App\Models\User;
 use App\Models\EstacionTrabajo;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -19,7 +20,11 @@ class OrdenControllerUpdateTest extends TestCase
 
     public function test_it_updates_an_existing_order_with_the_sent_fields_and_items(): void
     {
-        $user = User::factory()->create();
+        $role = Role::create([
+            'nombre' => 'Cajero',
+            'descripcion' => 'Acceso operativo a POS y Caja',
+        ]);
+        $user = User::factory()->create(['role_id' => $role->id]);
         $cliente = Cliente::create([
             'nombre' => 'Cliente original',
             'telefono' => '3000000000',

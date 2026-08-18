@@ -121,6 +121,11 @@ class PuestoEstacionController extends Controller
 
         $user->loadMissing(['role', 'estacion']);
 
+        $rol = mb_strtolower($user->role?->nombre ?? '');
+        if (in_array($rol, ['admin', 'administrador', 'gerente'], true)) {
+            return $user;
+        }
+
         if ($user->estacion?->codigo !== 'COCINA') {
             abort(403, 'El usuario no pertenece a la estación Cocina.');
         }
