@@ -85,6 +85,7 @@ class AsignadorOrdenCocinaService
             }
 
             $orden = Orden::where('id', $ordenPrioritaria->id)
+                ->operativas()
                 ->lockForUpdate()
                 ->with(['detalles.producto.categoria', 'detalles.estacion'])
                 ->first();

@@ -13,8 +13,8 @@ class UsuarioSeeder extends Seeder
     public function run(): void
     {
         $usuarios = [
-            ['name' => 'Juan1', 'username' => 'cocineroCocina1', 'email' => 'cocineroCocina1@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 1],
-            ['name' => 'Juan2', 'username' => 'cocineroCocina2', 'email' => 'cocineroCocina2@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 1],
+            ['name' => 'JuanCocinero1', 'username' => 'cocineroCocina1', 'email' => 'cocineroCocina1@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 1],
+            ['name' => 'JuanCocinero2', 'username' => 'cocineroCocina2', 'email' => 'cocineroCocina2@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 1],
             ['name' => 'Toto', 'username' => 'cocineroParrilla', 'email' => 'cocineroParrilla@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 2],
             ['name' => 'Pedro', 'username' => 'mesero', 'email' => 'mesero@gmail.com', 'password' => bcrypt('Admin2026***'), 'role_id' => 2, 'estacion_id' => 4],
         ];

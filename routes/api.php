@@ -57,6 +57,7 @@ Route::middleware('jwt')->group(function () {
         Route::get('clientes/search', [ClienteController::class, 'search']);
         Route::apiResource('clientes', ClienteController::class);
         Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
+        Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
         Route::apiResource('ordenes', OrdenController::class);
         Route::apiResource('pagos-ordenes', PagoOrdenController::class);
     });

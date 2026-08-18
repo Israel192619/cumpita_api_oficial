@@ -65,6 +65,7 @@ class PuestoEstacionController extends Controller
         ]);
 
         $orden = Orden::where('id', $data['orden_id'])
+            ->operativas()
             ->with('detalles')
             ->firstOrFail();
 

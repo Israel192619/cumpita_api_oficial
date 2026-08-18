@@ -45,6 +45,7 @@ class ServicioControllerTest extends TestCase
         Schema::create('ordenes', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('user_id')->nullable(); $table->unsignedBigInteger('mesero_id')->nullable();
             $table->unsignedInteger('numero_orden'); $table->string('estado')->default('pendiente');
+            $table->string('tipo_flujo')->default('normal'); $table->string('estado_preorden')->nullable();
             $table->timestamp('tomada_en')->nullable(); $table->timestamp('entregada_en')->nullable(); $table->timestamps();
         });
         Schema::create('productos', function (Blueprint $table) {
@@ -151,6 +152,27 @@ class ServicioControllerTest extends TestCase
         } catch (HttpExceptionInterface $e) {
             $this->assertSame(403, $e->getStatusCode());
         }
+    }
+
+    public function test_preorden_programada_no_aparece_en_servicio_hasta_ser_activada(): void
+    {
+        [$mesero] = $this->meseros();
+        $programada = Orden::create([
+            'user_id' => $mesero->id, 'numero_orden' => 142, 'estado' => 'pendiente',
+            'tipo_flujo' => 'preorden', 'estado_preorden' => 'programada',
+        ]);
+        $activada = Orden::create([
+            'user_id' => $mesero->id, 'numero_orden' => 143, 'estado' => 'pendiente',
+            'tipo_flujo' => 'preorden', 'estado_preorden' => 'activada',
+        ]);
+        $token = JWTAuth::fromUser($mesero);
+        JWTAuth::setToken($token)->authenticate();
+        auth('api')->setUser($mesero);
+
+        $tablero = (new ServicioController())->index(app(KdsEstacionService::class))->getData(true);
+
+        $this->assertSame([$activada->id], collect($tablero['disponibles'])->pluck('id')->all());
+        $this->assertNotContains($programada->id, collect($tablero['disponibles'])->pluck('id')->all());
     }
 
     public function test_cerrar_servicio_desde_celular_no_invalida_el_jwt_principal(): void

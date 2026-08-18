@@ -15,7 +15,14 @@ class Orden extends Model
         'cliente_id',
         'mesa_id',
         'fecha_orden',
-        'fecha_reserva',
+        'fecha_programada',
+        'tipo_flujo',
+        'estado_preorden',
+        'preorden_activada_en',
+        'preorden_activada_por',
+        'preorden_cancelada_en',
+        'preorden_cancelada_por',
+        'motivo_cancelacion_preorden',
         'numero_orden',
         'subtotal',
         'descuento',
@@ -28,7 +35,9 @@ class Orden extends Model
 
     protected $casts = [
         'fecha_orden' => 'datetime',
-        'fecha_reserva' => 'datetime',
+        'fecha_programada' => 'datetime',
+        'preorden_activada_en' => 'datetime',
+        'preorden_cancelada_en' => 'datetime',
         'subtotal' => 'decimal:2',
         'descuento' => 'decimal:2',
         'total' => 'decimal:2',
@@ -52,6 +61,47 @@ class Orden extends Model
     public function mesero()
     {
         return $this->belongsTo(User::class, 'mesero_id');
+    }
+
+    public function preordenActivadaPor()
+    {
+        return $this->belongsTo(User::class, 'preorden_activada_por');
+    }
+
+    public function preordenCanceladaPor()
+    {
+        return $this->belongsTo(User::class, 'preorden_cancelada_por');
+    }
+
+    public function scopeOperativas($query)
+    {
+        return $query->where(function ($query) {
+            $query->whereIn('tipo_flujo', ['normal'])
+                ->orWhereNull('tipo_flujo')
+                ->orWhere(function ($query) {
+                    $query->where('tipo_flujo', 'preorden')->where('estado_preorden', 'activada');
+                });
+        });
+    }
+
+    public function scopeDeFechaOperativa($query, string $fecha)
+    {
+        return $query->where(function ($query) use ($fecha) {
+            $query->where(function ($query) use ($fecha) {
+                $query->where('tipo_flujo', 'preorden')
+                    ->where('estado_preorden', 'activada')
+                    ->whereDate('preorden_activada_en', $fecha);
+            })->orWhere(function ($query) use ($fecha) {
+                $query->where(function ($query) {
+                    $query->where('tipo_flujo', 'normal')->orWhereNull('tipo_flujo');
+                })->whereDate('created_at', $fecha);
+            });
+        });
+    }
+
+    public function esPreordenProgramada(): bool
+    {
+        return $this->tipo_flujo === 'preorden' && $this->estado_preorden === 'programada';
     }
 
     /**

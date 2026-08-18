@@ -31,7 +31,7 @@ class PrioridadOrdenCocinaService
     private function obtenerOrdenesPendientesParaEstacion(int $estacionId): Collection
     {
         return Orden::with(['detalles.producto', 'detalles.estacion', 'cliente', 'mesa'])
-            ->whereDate('created_at', now()->toDateString())
+            ->operativas()->deFechaOperativa(now()->toDateString())
             ->whereHas('detalles', function ($query) use ($estacionId) {
                 $query->where('estacion_id', $estacionId)
                     ->where(function ($query) {

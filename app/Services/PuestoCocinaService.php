@@ -552,7 +552,7 @@ class PuestoCocinaService
         $ordenesAsignadas = PuestoEstacion::whereNotNull('orden_id')->pluck('orden_id')->filter()->values();
 
         return Orden::with(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion'])
-            ->whereDate('created_at', now()->toDateString())
+            ->operativas()->deFechaOperativa(now()->toDateString())
             ->whereHas('detalles', function ($query) use ($estacionId) {
                 $query->where('estacion_id', $estacionId)
                     ->where(function ($query) {
@@ -770,6 +770,9 @@ class PuestoCocinaService
     public function procesarNuevaOrden(Orden $orden): void
     {
         Log::info('========== procesarNuevaOrden ==========');
+        if ($orden->esPreordenProgramada() || $orden->estado_preorden === 'cancelada') {
+            return;
+        }
         $estacionId = $orden->detalles()->where('estado_cocina', 'pendiente')->first()?->estacion_id;
         if (!$estacionId) {
             return;

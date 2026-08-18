@@ -29,7 +29,7 @@ class ServicioController extends Controller
             'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion',
             'mesero:id,name',
-        ])->whereNotIn('estado', ['entregado', 'cancelado'])->orderBy('created_at');
+        ])->operativas()->whereNotIn('estado', ['entregado', 'cancelado'])->orderBy('created_at');
 
         $ordenes = (clone $base)->get();
         $kds->sincronizar($ordenes->pluck('detalles')->flatten());

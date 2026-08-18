@@ -21,7 +21,7 @@ class CocinaController extends Controller
         $activos = ['pendiente', 'en_preparacion', 'listo_para_recoger'];
 
         $detalles = OrdenDetalle::with(['opciones.modificadorOpcion.modificador'])
-            ->whereHas('orden', fn ($query) => $query->whereDate('created_at', $fecha)
+            ->whereHas('orden', fn ($query) => $query->operativas()->deFechaOperativa($fecha)
                 ->whereIn('estado', ['pendiente', 'preparando', 'listo']))
             ->get();
         $kds->sincronizar($detalles);
@@ -30,7 +30,7 @@ class CocinaController extends Controller
             'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria',
             'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
-        ])->whereDate('created_at', $fecha)
+        ])->operativas()->deFechaOperativa($fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
             ->whereHas('detalles.estadosEstacion', fn ($query) => $query
                 ->where('estacion_id', $estacion->id)->whereIn('estado', $activos))

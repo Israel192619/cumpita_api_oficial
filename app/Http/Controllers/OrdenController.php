@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Events\OrdenCreadaEvent;
 use App\Events\OrdenCocinaActualizadaEvent;
+use App\Events\PreordenActualizadaEvent;
 use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
@@ -22,9 +23,12 @@ class OrdenController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->get();
+        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
+            ->when($request->filled('tipo_flujo'), fn ($query) => $query->where('tipo_flujo', $request->input('tipo_flujo')))
+            ->when($request->filled('estado_preorden'), fn ($query) => $query->where('estado_preorden', $request->input('estado_preorden')))
+            ->orderByDesc('created_at')->get();
         return response()->json([
             'ordenes' => $ordenes
         ], 200);
@@ -43,7 +47,8 @@ class OrdenController extends Controller
             'mesa_id' => 'nullable|exists:mesas,id',
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
             'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
-            'fecha_reserva' => 'nullable|date_format:Y-m-d\TH:i:s',
+            'tipo_flujo' => 'nullable|in:normal,preorden',
+            'fecha_programada' => 'nullable|required_if:tipo_flujo,preorden|date_format:Y-m-d\TH:i:s|after:now',
             'subtotal' => 'required|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
@@ -104,6 +109,7 @@ class OrdenController extends Controller
                 $clienteId = $cliente->id;
             }
 
+            $tipoFlujo = $request->input('tipo_flujo', $request->filled('fecha_programada') ? 'preorden' : 'normal');
             $fechaOrden = $request->filled('fecha_orden')
                 ? Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_orden)
                 : now();
@@ -122,7 +128,9 @@ class OrdenController extends Controller
                 'mesa_id' => $request->mesa_id,
                 'numero_orden' => $numeroOrden,
                 'fecha_orden' => $request->filled('fecha_orden') ? $request->fecha_orden : null,
-                'fecha_reserva' => $request->filled('fecha_reserva') ? $request->fecha_reserva : null,
+                'fecha_programada' => $tipoFlujo === 'preorden' ? $request->fecha_programada : null,
+                'tipo_flujo' => $tipoFlujo,
+                'estado_preorden' => $tipoFlujo === 'preorden' ? 'programada' : null,
                 'subtotal' => $request->subtotal,
                 'descuento' => $request->descuento ?? 0,
                 'total' => $request->total,
@@ -175,19 +183,23 @@ class OrdenController extends Controller
 
             DB::commit();
 
-            $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
-
-            // Intentar asignación automática tras crear la orden
-            try {
-                app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
-            } catch (\Throwable $e) {
-                // no interrumpir la respuesta por errores del asignador
+            if ($orden->esPreordenProgramada()) {
+                $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_creada'), 'preorden_creada', $orden->id);
+            } else {
+                $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
+                try {
+                    app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
+                } catch (\Throwable $e) {
+                    // La asignación automática no invalida una orden confirmada.
+                }
             }
 
             return response()->json([
                 'message' => 'Orden creada exitosamente',
                 'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
             ], 201);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Exception $e) {
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
@@ -228,7 +240,8 @@ class OrdenController extends Controller
             'tipo_orden' => 'nullable|in:dine-in,to-go,delivery',
             // 'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
             'fecha_orden' => 'nullable|date_format:Y-m-d\TH:i:s',
-            'fecha_reserva' => 'nullable|date_format:Y-m-d\TH:i:s',
+            'tipo_flujo' => 'nullable|in:normal,preorden',
+            'fecha_programada' => 'nullable|date_format:Y-m-d\TH:i:s',
             'subtotal' => 'nullable|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'nullable|numeric|min:0',
@@ -279,8 +292,21 @@ class OrdenController extends Controller
                 if ($request->has('fecha_orden')) {
                     $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
                 }
-                if ($request->has('fecha_reserva')) {
-                    $updateData['fecha_reserva'] = $request->filled('fecha_reserva') ? $request->fecha_reserva : null;
+                if ($request->has('tipo_flujo') || $request->has('fecha_programada')) {
+                    abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede modificarse.');
+                    $tipoFlujo = $request->input('tipo_flujo', $request->filled('fecha_programada') ? 'preorden' : 'normal');
+                    if ($orden->estado_preorden === 'activada' && $tipoFlujo !== 'preorden') {
+                        abort(422, 'Una preorden activada no puede convertirse en pedido normal.');
+                    }
+                    if ($tipoFlujo === 'preorden' && $orden->estado_preorden !== 'activada') {
+                        abort_unless($request->filled('fecha_programada'), 422, 'La fecha programada es obligatoria para una preorden.');
+                        abort_unless(Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_programada)->isFuture(), 422, 'La fecha programada debe ser futura.');
+                    }
+                    $updateData['tipo_flujo'] = $tipoFlujo;
+                    $updateData['fecha_programada'] = $tipoFlujo === 'preorden' ? $request->input('fecha_programada', $orden->fecha_programada) : null;
+                    $updateData['estado_preorden'] = $tipoFlujo === 'preorden'
+                        ? ($orden->estado_preorden ?: 'programada')
+                        : null;
                 }
                 if ($request->has('descuento')) {
                     $updateData['descuento'] = $request->descuento ?? 0;
@@ -327,17 +353,22 @@ class OrdenController extends Controller
                 ]);
             });
 
-            // El evento se emite fuera de la transacción: Reverb solo ve cambios confirmados.
-            $this->emitirEventoSeguro(
-                new OrdenCocinaActualizadaEvent($ordenActualizada, $historialIds),
-                'orden_actualizada',
-                $ordenActualizada->id
-            );
+            if ($ordenActualizada->esPreordenProgramada()) {
+                $this->emitirEventoSeguro(new PreordenActualizadaEvent($ordenActualizada), 'preorden_actualizada', $ordenActualizada->id);
+            } else {
+                $this->emitirEventoSeguro(
+                    new OrdenCocinaActualizadaEvent($ordenActualizada, $historialIds),
+                    'orden_actualizada',
+                    $ordenActualizada->id
+                );
+            }
 
             return response()->json([
                 'message' => 'Orden actualizada exitosamente',
                 'orden' => $ordenActualizada,
             ], 200);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Exception $e) {
             if (str_contains($e->getMessage(), 'No hay suficiente stock') || str_contains($e->getMessage(), 'estación de trabajo activa')) {
                 return response()->json([
@@ -349,6 +380,42 @@ class OrdenController extends Controller
                 'message' => 'Error al actualizar la orden',
                 'error' => $e->getMessage()
             ], 500);
+        }
+    }
+
+    public function activarPreorden(string $id)
+    {
+        try {
+            $orden = DB::transaction(function () use ($id) {
+                $orden = Orden::with('detalles')->lockForUpdate()->findOrFail($id);
+                abort_unless($orden->tipo_flujo === 'preorden', 422, 'La orden seleccionada no es una preorden.');
+                abort_if($orden->estado_preorden === 'activada', 409, 'La preorden ya fue activada.');
+                abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede activarse.');
+
+                $orden->update([
+                    'estado_preorden' => 'activada',
+                    'preorden_activada_en' => now(),
+                    'preorden_activada_por' => auth('api')->id(),
+                    'fecha_orden' => now(),
+                    'estado' => 'pendiente',
+                ]);
+                app(\App\Services\KdsEstacionService::class)->sincronizar($orden->detalles);
+                return $orden->fresh(['cliente', 'mesa', 'detalles.producto', 'detalles.estadosEstacion']);
+            });
+
+            $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_activada'), 'preorden_activada', $orden->id);
+            $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
+            try {
+                app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
+            } catch (\Throwable $e) {
+                Log::warning('No se pudo asignar automáticamente la preorden activada.', ['orden_id' => $orden->id, 'error' => $e->getMessage()]);
+            }
+
+            return response()->json(['message' => 'Preorden activada correctamente.', 'orden' => $orden]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'No se pudo activar la preorden.', 'error' => $e->getMessage()], 500);
         }
     }
 
