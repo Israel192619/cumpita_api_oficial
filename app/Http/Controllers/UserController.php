@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 
@@ -32,6 +33,7 @@ class UserController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
+            'username' => ['nullable', 'string', 'min:3', 'max:50', 'regex:/^[a-zA-Z0-9._-]+$/', 'unique:users,username'],
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:8',
             'pin' => 'nullable|digits_between:4,6',
@@ -54,14 +56,18 @@ class UserController extends Controller
         try{
             $esMesero = Role::whereKey($request->role_id)
                 ->whereRaw('LOWER(nombre) = ?', ['mesero'])->exists();
-            $user = User::create([
+            $datosUsuario = [
                 'name' => $request->name,
                 'email' => $request->email,
                 'password' => Hash::make($request->password),
                 'pin' => $esMesero && $request->filled('pin') ? Hash::make($request->pin) : null,
                 'role_id' => $request->role_id,
                 'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : null,
-            ]);
+            ];
+            if ($request->filled('username')) {
+                $datosUsuario['username'] = Str::lower(trim($request->username));
+            }
+            $user = User::create($datosUsuario);
 
             $avatarPath = null;
 
@@ -109,6 +115,10 @@ class UserController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
+            'username' => [
+                'nullable', 'string', 'min:3', 'max:50', 'regex:/^[a-zA-Z0-9._-]+$/',
+                Rule::unique('users', 'username')->ignore($id),
+            ],
             'email' => "required|email|unique:users,email,$id",
             'password' => 'nullable|min:8',
             'pin' => 'nullable|digits_between:4,6',
@@ -135,12 +145,16 @@ class UserController extends Controller
             if (!$user) {
                 return response()->json(['message' => 'Usuario no encontrado'], 404);
             }
-            $user->update([
+            $datosUsuario = [
                 'name' => $request->name,
                 'email' => $request->email,
                 'role_id' => $request->role_id,
                 'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : $user->estacion_id,
-            ]);
+            ];
+            if ($request->filled('username')) {
+                $datosUsuario['username'] = Str::lower(trim($request->username));
+            }
+            $user->update($datosUsuario);
             $esMesero = Role::whereKey($request->role_id)
                 ->whereRaw('LOWER(nombre) = ?', ['mesero'])->exists();
             if ($request->filled('password')) {

@@ -14,36 +14,6 @@ class ProductoController extends Controller
     /**
      * Display a listing of the resource.
      */
-    // public function index(Request $request)
-    // {
-    //     $query = Producto::with('categoria');
-
-    //     if ($request->filled('categoria_id')) {
-
-    //         $categoriaId = $request->categoria_id;
-
-    //         $idsCategorias = Categoria::where('parent_id', $categoriaId)
-    //             ->pluck('id')
-    //             ->toArray();
-
-    //         $idsCategorias[] = (int) $categoriaId;
-
-    //         $query->whereIn('categoria_id', $idsCategorias);
-    //     }
-
-    //     $productos = $query
-    //         ->latest()
-    //         ->get()
-    //         ->map(function ($producto) {
-    //             $producto->modificadores = $producto->modificadores_estructurados;
-    //             return $producto;
-    //         });
-
-    //     return response()->json([
-    //         'productos' => $productos,
-    //         'message' => 'Productos obtenido correctamente'
-    //     ]);
-    // }
     public function index(Request $request)
     {
         // OPTIMIZACIÓN: Añadimos 'opciones.modificador' al método 'with'
@@ -89,20 +59,17 @@ class ProductoController extends Controller
         $data = $this->validarProducto($request);
         $categoria = Categoria::with('children')
             ->findOrFail($data['categoria_id']);
-
         if ($categoria->children->count() > 0) {
             return response()->json([
                 'message' => 'Debe seleccionar una subcategoría válida.'
             ], 422);
         }
-
         return DB::transaction(function () use ($data, $request) {
             $imagenPath = null;
             if ($request->hasFile('imagen')) {
                 $imagenPath = $request->file('imagen')->store('productos', 'public');
             }
 
-            // El método create funciona gracias al $fillable que definimos en el modelo
             $producto = Producto::create([
                 'categoria_id' => $data['categoria_id'],
                 'estacion_id'  => $data['estacion_id'],
@@ -117,18 +84,14 @@ class ProductoController extends Controller
             ]);
 
             if (!empty($data['opciones'])) {
-
                 $opcionesSync = [];
-
                 foreach ($data['opciones'] as $opcion) {
                     $opcionesSync[$opcion['id']] = [
                         'predeterminado' => $opcion['predeterminado'] ?? false
                     ];
                 }
-
                 $producto->opciones()->sync($opcionesSync);
             }
-
             return response()->json([
                 'producto' => $producto->load(['categoria', 'estacion']),
                 'message'  => 'Producto creado correctamente'

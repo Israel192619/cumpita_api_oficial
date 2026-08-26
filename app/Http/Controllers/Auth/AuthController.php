@@ -45,18 +45,35 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
-        $credentials = $request->only('email', 'password');
+        // 1. Validamos solo dos cosas: el identificador (que puede ser email o usuario) y la clave
+        $data = $request->validate([
+            'identificador' => ['required', 'string', 'max:255'],
+            'password' => ['required', 'string'],
+        ]);
 
-        try {
-            if (!$token = JWTAuth::attempt($credentials)) {
-                return response()->json(['message' => 'Credenciales Inválidas'], 401);
-            }
-        } catch (JWTException $e) {
-            return response()->json(['message' => 'Could not create token'], 500);
+
+        $identificador = Str::lower(trim($data['identificador']));
+
+        $user = User::query()
+            ->whereRaw('LOWER(email) = ?', [$identificador])
+            ->orWhereRaw('LOWER(username) = ?', [$identificador])
+            ->first();
+
+        if (!$user || !Hash::check($data['password'], $user->password)) {
+            return response()->json(['message' => 'Credenciales inválidas'], 401);
         }
-        /** @var \Tymon\JWTAuth\JWTGuard $auth */
+
+        // 5. Generamos el token de seguridad
+        try {
+            $token = JWTAuth::fromUser($user);
+        } catch (JWTException $e) {
+            return response()->json(['message' => 'No se pudo crear el token de autenticación'], 500);
+        }
+
         $auth = auth('api');
 
+        /** @var \Tymon\JWTAuth\JWTGuard $auth */
+        // 6. Enviamos la respuesta exitosa
         return response()->json([
             'token' => $token,
             'expires_in' => $auth->factory()->getTTL() * 60
@@ -120,10 +137,10 @@ class AuthController extends Controller
         try {
             JWTAuth::invalidate(JWTAuth::getToken());
         } catch (JWTException $e) {
-            return response()->json(['message' => 'Failed to logout, please try again'], 500);
+            return response()->json(['message' => 'No se pudo cerrar la sesión, por favor inténtalo de nuevo'], 500);
         }
 
-        return response()->json(['message' => 'Successfully logged out']);
+        return response()->json(['message' => 'Sesión cerrada correctamente']);
     }
 
     /**public function getUser()

@@ -15,33 +15,40 @@ class ReestablecerContrasenaController extends Controller
 {
     public function olvideMiContrasena(Request $request)
     {
-        $request->validate([
-            'email' => 'required|email'
+        $data = $request->validate([
+            // "email" mantiene compatibilidad temporal con clientes anteriores.
+            'identificador' => ['nullable', 'required_without:email', 'string', 'max:255'],
+            'email' => ['nullable', 'required_without:identificador', 'string', 'max:255'],
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        $identificador = Str::lower(trim($data['identificador'] ?? $data['email']));
+        $user = User::query()
+            ->whereRaw('LOWER(email) = ?', [$identificador])
+            ->orWhereRaw('LOWER(username) = ?', [$identificador])
+            ->first();
 
+        // La respuesta no revela si el correo o usuario está registrado.
         if (!$user) {
             return response()->json([
-                'message' => 'No se encontro una cuenta asociada a ese correo'
-            ], 404);
+                'message' => 'Si existe una cuenta asociada, se enviará un enlace de recuperación.'
+            ], 200);
         }
 
         $token = Str::random(60);
 
         DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $request->email],
+            ['email' => $user->email],
             [
                 'token' => Hash::make($token),
                 'created_at' => now()
             ]
         );
 
-        Mail::to($request->email)
-        ->send(new ReestablecerContrasenaMail($token, $request->email));
+        Mail::to($user->email)
+            ->send(new ReestablecerContrasenaMail($token, $user->email));
 
         return response()->json([
-            'message' => 'Si el correo existe, se enviará un enlace'
+            'message' => 'Si existe una cuenta asociada, se enviará un enlace de recuperación.'
         ], 200);
     }
 
@@ -58,11 +65,11 @@ class ReestablecerContrasenaController extends Controller
             ->first();
 
         if (!$record || !Hash::check($request->token, $record->token)) {
-            return response()->json(['message' => 'Token inválido'], 400);
+            return response()->json(['message' => 'El enlace de recuperación no es válido o ya fue utilizado'], 400);
         }
 
         if (now()->diffInMinutes($record->created_at) > 60) {
-            return response()->json(['message' => 'Token expirado'], 400);
+            return response()->json(['message' => 'El enlace de recuperación ha expirado. Solicita uno nuevo.'], 400);
         }
 
         $user = User::where('email', $request->email)->first();

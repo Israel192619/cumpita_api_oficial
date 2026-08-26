@@ -63,23 +63,15 @@ class OrdenController extends Controller
             'items.*.modificadores.*.modificador_opcion_id' => 'required_with:items.*.modificadores|exists:modificador_opciones,id',
             'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
         ]);
-
-        
-
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
-
         if ($this->esMesero()) {
             abort_unless($request->input('tipo_flujo') === 'preorden', 403, 'El mesero solamente puede registrar preórdenes.');
         }
-
         if (!$request->cliente_id && !$request->cliente_nombre) {
             return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
         }
-
-        // La estación se valida antes de abrir la transacción: cada detalle nuevo debe
-        // conservar una estación concreta aunque el producto cambie más adelante.
         $productos = Producto::with('estacion')
             ->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
             ->get()
@@ -92,20 +84,13 @@ class OrdenController extends Controller
                 ], 422);
             }
         }
-
         DB::beginTransaction();
-
         try {
             $userActual = auth('api')->user();
-            
-            // Obtener cliente existente o crear uno nuevo
             $clienteId = null;
-            
-            // Prioritario: cliente_id si se proporciona
             if ($request->cliente_id) {
                 $clienteId = $request->cliente_id;
             }
-            // Si no, crear/buscar por nombre
             elseif ($request->cliente_nombre) {
                 $cliente = Cliente::firstOrCreate(
                     ['nombre' => $request->cliente_nombre],

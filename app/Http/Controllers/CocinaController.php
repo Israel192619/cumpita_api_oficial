@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\DB;
 class CocinaController extends Controller
 {
     private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
+
+    
     public function pedidos(Request $request, KdsEstacionService $kds)
     {
         $fecha = $request->input('fecha', now()->toDateString());
