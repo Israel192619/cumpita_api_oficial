@@ -13,9 +13,11 @@ return new class extends Migration
             $table->foreignId('estacion_id')->constrained('estaciones_trabajo')->cascadeOnDelete();
             $table->string('nombre', 50);
             $table->foreignId('user_id')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('orden_id')->nullable()->constrained('ordenes')->nullOnDelete();
             $table->timestamps();
 
             $table->unique(['estacion_id', 'nombre']);
+            $table->unique('orden_id');
         });
     }
 

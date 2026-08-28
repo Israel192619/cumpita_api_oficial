@@ -272,6 +272,10 @@ class OrdenController extends Controller
                     $clienteId = $cliente->id;
                 }
 
+                if (!$clienteId) {
+                    throw new \InvalidArgumentException('El cliente es obligatorio para actualizar una orden.');
+                }
+
                 $updateData = [];
                 foreach (['mesa_id', 'tipo_orden', 'subtotal', 'observaciones'] as $campo) {
                     if ($request->has($campo)) {

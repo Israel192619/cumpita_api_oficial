@@ -6,20 +6,39 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
+        Schema::create('roles', function (Blueprint $table) {
+            $table->id();
+            $table->string('nombre')->unique();
+            $table->text('descripcion')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('estaciones_trabajo', function (Blueprint $table) {
+            $table->id();
+            $table->string('nombre')->unique();
+            $table->string('codigo', 50)->unique();
+            $table->text('descripcion')->nullable();
+            $table->boolean('activa')->default(true)->index();
+            $table->unsignedInteger('orden')->default(0);
+            $table->timestamps();
+        });
+
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('username')->unique()->nullable();
+            $table->string('username')->nullable()->unique();
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            $table->string('pin')->nullable();
+            $table->foreignId('role_id')->nullable()->constrained('roles')->nullOnDelete();
+            $table->foreignId('estacion_id')->nullable()->constrained('estaciones_trabajo')->nullOnDelete();
             $table->rememberToken();
             $table->timestamps();
+
+            $table->index('estacion_id');
         });
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {
@@ -38,13 +57,12 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('users');
+        Schema::dropIfExists('estaciones_trabajo');
+        Schema::dropIfExists('roles');
     }
 };

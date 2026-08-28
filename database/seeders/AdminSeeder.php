@@ -2,8 +2,10 @@
 
 namespace Database\Seeders;
 
-use Illuminate\Database\Seeder;
+use App\Models\Role;
 use App\Models\User;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
 
 class AdminSeeder extends Seeder
 {
@@ -12,18 +14,25 @@ class AdminSeeder extends Seeder
      */
     public function run(): void
     {
-        $user = User::create([
-            'name' => 'Admin',
-            'username' => 'admin',
-            'email' => 'admin@gmail.com',
-            'password' => bcrypt('Admin2026***'),
-            'role_id' => 1, 
-        ]);
+        $rolAdministrador = Role::where('nombre', 'Admin')->firstOrFail();
+
+        $user = User::updateOrCreate(
+            ['email' => 'admin@gmail.com'],
+            [
+                'name' => 'Admin',
+                'username' => 'admin',
+                'password' => Hash::make('Admin2026***'),
+                'role_id' => $rolAdministrador->id,
+            ]
+        );
         
-        $user->PerfilUsuarios()->create([
-            'direccion' => 'Av. Simon Lopez',
-            'numero_celular' => '70404505',
-            'avatar' => null,
-        ]);
+        $user->perfilUsuarios()->updateOrCreate(
+            ['user_id' => $user->id],
+            [
+                'direccion' => 'Av. Simon Lopez',
+                'numero_celular' => '70404505',
+                'avatar' => null,
+            ]
+        );
     }
 }

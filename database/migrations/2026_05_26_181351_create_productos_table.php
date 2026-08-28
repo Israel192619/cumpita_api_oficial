@@ -6,21 +6,16 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('productos', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('categoria_id')
-                ->constrained('categorias')
-                ->cascadeOnDelete();
-
+            $table->foreignId('categoria_id')->constrained('categorias')->cascadeOnDelete();
+            $table->foreignId('estacion_id')->nullable()->constrained('estaciones_trabajo')->nullOnDelete();
             $table->string('nombre');
             $table->text('descripcion')->nullable();
             $table->decimal('precio', 10, 2);
-            $table->string('sku')->unique()->nullable();
+            $table->string('sku')->nullable()->unique();
             $table->string('imagen')->nullable();
             $table->boolean('maneja_stock')->default(false);
             $table->integer('stock')->nullable();
@@ -29,12 +24,11 @@ return new class extends Migration
             $table->boolean('activo')->default(true);
             $table->boolean('destacado')->default(false);
             $table->timestamps();
+
+            $table->index('estacion_id');
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('productos');

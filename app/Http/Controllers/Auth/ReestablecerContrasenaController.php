@@ -16,12 +16,10 @@ class ReestablecerContrasenaController extends Controller
     public function olvideMiContrasena(Request $request)
     {
         $data = $request->validate([
-            // "email" mantiene compatibilidad temporal con clientes anteriores.
-            'identificador' => ['nullable', 'required_without:email', 'string', 'max:255'],
-            'email' => ['nullable', 'required_without:identificador', 'string', 'max:255'],
+            'identificador' => ['required', 'string', 'max:255'],
         ]);
 
-        $identificador = Str::lower(trim($data['identificador'] ?? $data['email']));
+        $identificador = Str::lower(trim($data['identificador']));
         $user = User::query()
             ->whereRaw('LOWER(email) = ?', [$identificador])
             ->orWhereRaw('LOWER(username) = ?', [$identificador])

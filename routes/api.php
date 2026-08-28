@@ -53,7 +53,8 @@ Route::middleware('jwt')->group(function () {
         Route::apiResource('modificadores', ModificadorController::class);
         Route::apiResource('categorias', CategoriaController::class)->except(['index', 'show']);
         Route::apiResource('productos', ProductoController::class)->except(['index', 'show']);
-        Route::apiResource('mesas', MesaController::class)->except(['index', 'show']);
+        // El formulario de edición consulta GET /mesas/{mesa}; no excluir show.
+        Route::apiResource('mesas', MesaController::class)->except(['index']);
     });
 
     Route::middleware('access:captura-preorden')->group(function () {

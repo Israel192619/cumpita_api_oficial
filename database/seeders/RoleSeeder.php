@@ -2,27 +2,20 @@
 
 namespace Database\Seeders;
 
-use App\Models\Role;
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
 
 class RoleSeeder extends Seeder
 {
-    /**
-     * Run the database seeds.
-     */
     public function run(): void
     {
-        $roles = [
-            ['nombre' => 'Admin', 'descripcion' => 'Administrador del sistema'],
-            ['nombre' => 'Cocinero', 'descripcion' => 'Encargado de preparar los alimentos'],
-            ['nombre' => 'Mesero', 'descripcion' => 'Encargado de atender a los clientes'],
-            ['nombre' => 'Cajero', 'descripcion' => 'Encargado de gestionar las transacciones financieras'],
-            ['nombre' => 'Despacho', 'descripcion' => 'Acceso de la tablet al módulo Servicio'],
-        ];
-
-        foreach ($roles as $role) {
-            Role::updateOrCreate(['nombre' => $role['nombre']], $role);
-        }
+        $fecha = '2026-08-26 23:07:07';
+        DB::table('roles')->upsert([
+            ['id' => 1, 'nombre' => 'Admin', 'descripcion' => 'Administrador del sistema', 'created_at' => $fecha, 'updated_at' => $fecha],
+            ['id' => 2, 'nombre' => 'Cocinero', 'descripcion' => 'Encargado de preparar los alimentos', 'created_at' => $fecha, 'updated_at' => $fecha],
+            ['id' => 3, 'nombre' => 'Mesero', 'descripcion' => 'Encargado de atender a los clientes', 'created_at' => $fecha, 'updated_at' => $fecha],
+            ['id' => 4, 'nombre' => 'Cajero', 'descripcion' => 'Encargado de gestionar las transacciones financieras', 'created_at' => $fecha, 'updated_at' => $fecha],
+            ['id' => 5, 'nombre' => 'Despacho', 'descripcion' => 'Acceso de la tablet al módulo Servicio', 'created_at' => $fecha, 'updated_at' => $fecha],
+        ], ['id']);
     }
 }
