@@ -30,6 +30,7 @@ class Orden extends Model
         'estado',
         'estado_pago',
         'observaciones',
+        'version',
         'tipo_orden'
     ];
 
@@ -46,6 +47,7 @@ class Orden extends Model
         'tipo_orden' => 'string',
         'tomada_en' => 'datetime',
         'entregada_en' => 'datetime',
+        'version' => 'integer',
     ];
 
     protected $appends = ['cliente_nombre', 'cliente_telefono', 'saldo_pendiente'];

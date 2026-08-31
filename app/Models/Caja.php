@@ -35,6 +35,19 @@ class Caja extends Model
         return $this->belongsTo(User::class);
     }
 
+    /** Usuarios autorizados a cobrar en esta caja física. */
+    public function usuarios()
+    {
+        return $this->belongsToMany(User::class, 'caja_usuarios')
+            ->withPivot('asignado_por')
+            ->withTimestamps();
+    }
+
+    public function estaDisponiblePara(int $userId): bool
+    {
+        return (int) $this->user_id === $userId || $this->usuarios()->whereKey($userId)->exists();
+    }
+
     public function pagos()
     {
         return $this->hasMany(PagoOrden::class);

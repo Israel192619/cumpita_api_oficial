@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\AjusteStockController;
 use App\Http\Controllers\Auth\ReestablecerContrasenaController;
 use App\Http\Controllers\CategoriaController;
 use App\Http\Controllers\CajaController;
@@ -13,12 +14,12 @@ use App\Http\Controllers\HistorialCambioOrdenController;
 use App\Http\Controllers\MesaController;
 use App\Http\Controllers\ModificadorController;
 use App\Http\Controllers\MovimientoCajaController;
-use App\Http\Controllers\PuestoEstacionController;
 use App\Http\Controllers\OrdenController;
 use App\Http\Controllers\OrdenAdicionalController;
 use App\Http\Controllers\PagoOrdenController;
 use App\Http\Controllers\ProductoController;
 use App\Http\Controllers\RoleController;
+use App\Http\Controllers\ReservaStockController;
 use App\Http\Controllers\ReporteController;
 use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\UserController;
@@ -53,6 +54,9 @@ Route::middleware('jwt')->group(function () {
         Route::apiResource('modificadores', ModificadorController::class);
         Route::apiResource('categorias', CategoriaController::class)->except(['index', 'show']);
         Route::apiResource('productos', ProductoController::class)->except(['index', 'show']);
+        Route::get('ajustes-stock', [AjusteStockController::class, 'index']);
+        Route::post('ajustes-stock', [AjusteStockController::class, 'store']);
+        Route::post('ajustes-stock/{ajuste}/revertir', [AjusteStockController::class, 'revertir']);
         // El formulario de edición consulta GET /mesas/{mesa}; no excluir show.
         Route::apiResource('mesas', MesaController::class)->except(['index']);
     });
@@ -71,9 +75,12 @@ Route::middleware('jwt')->group(function () {
     });
 
     Route::middleware('access:pos')->group(function () {
+        Route::post('reservas-stock/sincronizar', [ReservaStockController::class, 'sincronizar']);
+        Route::delete('reservas-stock', [ReservaStockController::class, 'liberar']);
         Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
         Route::apiResource('clientes', ClienteController::class)->except(['store']);
         Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
+        Route::post('ordenes/{orden}/cancelar-venta', [OrdenController::class, 'cancelarVenta']);
         Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
         Route::apiResource('ordenes', OrdenController::class)->only(['index', 'destroy']);
         Route::apiResource('pagos-ordenes', PagoOrdenController::class);
@@ -81,22 +88,19 @@ Route::middleware('jwt')->group(function () {
 
     Route::middleware('access:kds')->group(function () {
         Route::get('cocina/pedidos', [CocinaController::class, 'pedidos']);
-        Route::get('cocina/control', [PuestoEstacionController::class, 'control']);
         Route::patch('cocina/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
         Route::get('kds/pedidos', [CocinaController::class, 'pedidos']);
+        Route::get('kds/preordenes-proximas', [CocinaController::class, 'preordenesProximas']);
         Route::patch('kds/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
-        Route::get('cocina/monitor/puestos', [PuestoEstacionController::class, 'index']);
-        Route::post('cocina/control/puestos/{puesto}/ocupar', [PuestoEstacionController::class, 'ocupar']);
-        Route::post('cocina/control/puestos/{puesto}/liberar', [PuestoEstacionController::class, 'liberar']);
-        Route::post('cocina/control/puestos/{puesto}/asignar-orden', [PuestoEstacionController::class, 'asignarOrden']);
-        Route::post('cocina/control/puestos/{puesto}/liberar-orden', [PuestoEstacionController::class, 'liberarOrden']);
-        Route::post('cocina/control/puestos/{puesto}/orden/lista', [PuestoEstacionController::class, 'ordenarLista']);
+        Route::post('kds/sesion', [CocinaController::class, 'registrarSesion']);
     });
 
     Route::middleware('access:caja')->group(function () {
         Route::get('cajas/actual', [CajaController::class, 'actual']);
         Route::post('cajas/abrir', [CajaController::class, 'abrir']);
         Route::post('cajas/{caja}/cerrar', [CajaController::class, 'cerrar']);
+        Route::get('cajas/{caja}/usuarios-disponibles', [CajaController::class, 'usuariosDisponibles']);
+        Route::put('cajas/{caja}/usuarios', [CajaController::class, 'actualizarUsuarios']);
         Route::apiResource('cajas', CajaController::class)->only(['index', 'show', 'update', 'destroy']);
         Route::post('movimientos-caja/{movimiento}/anular', [MovimientoCajaController::class, 'anular']);
         Route::apiResource('movimientos-caja', MovimientoCajaController::class)->only(['index', 'store']);

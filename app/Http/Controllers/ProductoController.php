@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Categoria;
+use App\Models\AjusteStock;
+use App\Events\StockActualizadoEvent;
+use App\Models\ReservaStock;
 use App\Models\Producto;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -43,6 +46,16 @@ class ProductoController extends Controller
             unset($producto->opciones); 
             
             return $producto;
+        });
+
+        $sesionId = $request->input('reserva_sesion');
+        $reservas = ReservaStock::activas()->selectRaw('producto_id, SUM(cantidad) as cantidad')
+            ->when($sesionId, fn ($query) => $query->where('sesion_id', '!=', $sesionId))
+            ->groupBy('producto_id')->pluck('cantidad', 'producto_id');
+        $productos->each(function ($producto) use ($reservas) {
+            $producto->stock_disponible = $producto->maneja_stock && $producto->stock !== null
+                ? max(0, (int) $producto->stock - (int) ($reservas[$producto->id] ?? 0))
+                : null;
         });
 
         return response()->json([
@@ -127,6 +140,7 @@ class ProductoController extends Controller
         }
 
         return DB::transaction(function () use ($data, $request, $producto) {
+            $stockAnterior = $producto->maneja_stock && $producto->stock !== null ? (int) $producto->stock : null;
             if ($request->hasFile('imagen')) {
                 if ($producto->imagen) {
                     Storage::disk('public')->delete($producto->imagen);
@@ -146,6 +160,20 @@ class ProductoController extends Controller
                 'stock_minimo' => $data['stock_minimo'] ?? null,
                 'imagen'       => $producto->imagen,
             ]);
+
+            $stockFinal = $producto->maneja_stock && $producto->stock !== null ? (int) $producto->stock : null;
+            if ($stockAnterior !== null && $stockFinal !== null && $stockAnterior !== $stockFinal) {
+                AjusteStock::create([
+                    'producto_id' => $producto->id,
+                    'tipo' => 'CORRECCION',
+                    'cantidad' => $stockFinal,
+                    'stock_anterior' => $stockAnterior,
+                    'stock_final' => $stockFinal,
+                    'motivo' => 'Corrección desde la edición del producto',
+                    'usuario_id' => auth('api')->id(),
+                ]);
+                StockActualizadoEvent::dispatch($producto->id, $stockFinal);
+            }
 
             // El método sync() limpia de forma atómica las opciones anteriores y asocia las nuevas
             if (!empty($data['opciones'])) {
@@ -191,13 +219,33 @@ class ProductoController extends Controller
             'cantidad' => 'required|integer|min:1',
         ]);
 
-        $producto->stock = max(0, (int) $producto->stock + (int) $data['cantidad']);
-        $producto->save();
+        return DB::transaction(function () use ($producto, $data) {
+            $producto = Producto::whereKey($producto->id)->lockForUpdate()->firstOrFail();
 
-        return response()->json([
-            'message' => 'Stock actualizado correctamente',
-            'producto' => $producto->fresh()
-        ]);
+            if (!$producto->maneja_stock || $producto->stock === null) {
+                return response()->json(['message' => 'El producto no tiene gestión de stock activa.'], 422);
+            }
+
+            $anterior = (int) $producto->stock;
+            $final = $anterior + (int) $data['cantidad'];
+            $producto->update(['stock' => $final]);
+
+            AjusteStock::create([
+                'producto_id' => $producto->id,
+                'tipo' => 'ENTRADA',
+                'cantidad' => (int) $data['cantidad'],
+                'stock_anterior' => $anterior,
+                'stock_final' => $final,
+                'motivo' => 'Reabastecimiento desde POS',
+                'usuario_id' => auth('api')->id(),
+            ]);
+            StockActualizadoEvent::dispatch($producto->id, $final);
+
+            return response()->json([
+                'message' => 'Stock actualizado correctamente',
+                'producto' => $producto->fresh()
+            ]);
+        });
     }
 
     private function validarProducto(Request $request)

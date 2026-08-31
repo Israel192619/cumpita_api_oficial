@@ -15,7 +15,7 @@ class PagoOrdenController extends Controller
      */
     public function index(Request $request)
     {
-        $query = PagoOrden::with('orden', 'caja');
+        $query = PagoOrden::with('orden', 'caja', 'usuario:id,name,username');
 
         if ($request->has('id_orden')) {
             $query->where('id_orden', $request->input('id_orden'));
@@ -43,19 +43,25 @@ class PagoOrdenController extends Controller
         return DB::transaction(function () use ($request) {
 
             $orden = Orden::lockForUpdate()->findOrFail($request->id_orden);
+            abort_if($orden->estado === 'cancelado', 422,
+                'No se pueden registrar pagos en una orden cancelada.');
             $cajaId = null;
 
             // Solo el efectivo entra a la caja. Para cobrar efectivo debe existir
-            // una caja abierta del cajero que registra el pago.
+            // una caja física abierta a la que el cajero está autorizado.
             if ($request->metodo_pago === 'efectivo') {
-                $caja = Caja::where('user_id', auth('api')->id())
+                $usuarioId = auth('api')->id();
+                $caja = Caja::where(function ($query) use ($usuarioId) {
+                        $query->where('user_id', $usuarioId)
+                            ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+                    })
                     ->where('estado', 'abierta')
                     ->lockForUpdate()
                     ->first();
 
                 if (!$caja) {
                     return response()->json([
-                        'error' => 'Debes abrir una caja antes de registrar pagos en efectivo.'
+                        'error' => 'No tienes acceso a una caja abierta para registrar pagos en efectivo.'
                     ], 422);
                 }
 
@@ -137,6 +143,7 @@ class PagoOrdenController extends Controller
             $pago = PagoOrden::create([
                 'id_orden'        => $orden->id,
                 'caja_id'          => $cajaId,
+                'user_id'          => auth('api')->id(),
                 'monto_recibido'  => $montoRecibido,
                 'monto_pagado'    => $montoAbonado,
                 'cambio_devuelto' => $cambioDevuelto,
@@ -155,7 +162,7 @@ class PagoOrdenController extends Controller
 
             return response()->json([
                 'mensaje'         => 'Pago procesado correctamente.',
-                'pago'            => $pago,
+                'pago'            => $pago->load('usuario:id,name,username'),
                 'monto_recibido'  => $montoRecibido,
                 'monto_abonado'   => $montoAbonado,
                 'cambio_devuelto' => round($cambioDevuelto, 2),

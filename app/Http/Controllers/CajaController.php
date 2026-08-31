@@ -2,19 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\CajaActualizadaEvent;
 use App\Models\Caja;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class CajaController extends Controller
 {
     /**
-     * Historial de cajas del usuario autenticado.
+     * Historial de cajas en las que el usuario puede operar.
      */
     public function index()
     {
-        $cajas = Caja::with('user:id,name,username')
-            ->where('user_id', auth('api')->id())
+        $cajas = $this->cajasDisponibles()
+            ->with(['user:id,name,username', 'usuarios:id,name,username'])
             ->latest('fecha_apertura')
             ->get();
 
@@ -22,12 +24,12 @@ class CajaController extends Controller
     }
 
     /**
-     * Devuelve la caja abierta del usuario, si existe.
+     * Devuelve la caja física abierta a la que el usuario está autorizado.
      */
     public function actual()
     {
-        $caja = Caja::with('user:id,name,username')
-            ->where('user_id', auth('api')->id())
+        $caja = $this->cajasDisponibles()
+            ->with(['user:id,name,username', 'usuarios:id,name,username'])
             ->where('estado', 'abierta')
             ->latest('fecha_apertura')
             ->first();
@@ -35,6 +37,9 @@ class CajaController extends Controller
         if (!$caja) {
             return response()->json(['caja' => null]);
         }
+
+        $caja->setAttribute('puede_cerrar', (int) $caja->user_id === (int) auth('api')->id());
+        $caja->setAttribute('es_compartida', (int) $caja->user_id !== (int) auth('api')->id());
 
         return response()->json([
             'caja' => $caja,
@@ -55,7 +60,7 @@ class CajaController extends Controller
         return DB::transaction(function () use ($data) {
             $usuarioId = auth('api')->id();
 
-            $cajaAbierta = Caja::where('user_id', $usuarioId)
+            $cajaAbierta = $this->cajasDisponibles()
                 ->where('estado', 'abierta')
                 ->lockForUpdate()
                 ->first();
@@ -74,6 +79,8 @@ class CajaController extends Controller
                 'estado' => 'abierta',
                 'observacion_apertura' => $data['observacion_apertura'] ?? null,
             ]);
+            $caja->usuarios()->attach($usuarioId, ['asignado_por' => $usuarioId]);
+            event(new CajaActualizadaEvent($caja->id, 'abierta'));
 
             return response()->json([
                 'message' => 'Caja abierta correctamente.',
@@ -83,14 +90,15 @@ class CajaController extends Controller
     }
 
     /**
-     * Muestra una caja propia junto con sus cobros en efectivo.
+     * Muestra una caja autorizada junto con sus cobros en efectivo.
      */
     public function show(string $id)
     {
         $caja = $this->cajaDelUsuario($id);
+        $caja->setAttribute('puede_cerrar', (int) $caja->user_id === (int) auth('api')->id());
 
         return response()->json([
-            'caja' => $caja->load('user:id,name,username'),
+            'caja' => $caja->load(['user:id,name,username', 'usuarios:id,name,username']),
             'resumen' => $this->resumen($caja),
         ]);
     }
@@ -129,6 +137,7 @@ class CajaController extends Controller
                 'estado' => 'cerrada',
                 'observacion_cierre' => $data['observacion_cierre'] ?? null,
             ]);
+            event(new CajaActualizadaEvent($caja->id, 'cerrada'));
 
             return response()->json([
                 'message' => 'Caja cerrada correctamente.',
@@ -151,11 +160,88 @@ class CajaController extends Controller
         return response()->json(['message' => 'No está permitido eliminar una caja registrada.'], 403);
     }
 
+    /**
+     * Solo quien abrió la caja puede decidir qué otros cajeros usan su efectivo.
+     */
+    public function actualizarUsuarios(Request $request, string $id)
+    {
+        $data = $request->validate([
+            'usuarios' => 'present|array',
+            'usuarios.*' => 'integer|exists:users,id',
+        ]);
+
+        $caja = Caja::whereKey($id)
+            ->where('user_id', auth('api')->id())
+            ->where('estado', 'abierta')
+            ->firstOrFail();
+
+        $usuarios = collect($data['usuarios'])
+            ->push((int) $caja->user_id)
+            ->unique()
+            ->values();
+
+        if ($this->usuariosElegibles()->whereIn('users.id', $usuarios)->count() !== $usuarios->count()) {
+            return response()->json([
+                'message' => 'Solo puedes autorizar cajeros o administradores para esta caja.',
+            ], 422);
+        }
+
+        $caja->usuarios()->syncWithPivotValues(
+            $usuarios->all(),
+            ['asignado_por' => auth('api')->id()]
+        );
+        event(new CajaActualizadaEvent($caja->id, 'autorizaciones_actualizadas'));
+
+        return response()->json([
+            'message' => 'Cajeros autorizados actualizados.',
+            'caja' => $caja->fresh()->load('usuarios:id,name,username'),
+        ]);
+    }
+
+    /** Lista ligera para asignar cajeros, disponible únicamente al responsable. */
+    public function usuariosDisponibles(string $id)
+    {
+        $this->cajaDelResponsable($id);
+
+        return response()->json([
+            'usuarios' => $this->usuariosElegibles()
+                ->where('users.id', '!=', auth('api')->id())
+                ->get(),
+        ]);
+    }
+
     private function cajaDelUsuario(string $id): Caja
     {
-        return Caja::where('id', $id)
+        return $this->cajasDisponibles()->whereKey($id)->firstOrFail();
+    }
+
+    private function cajaDelResponsable(string $id): Caja
+    {
+        return Caja::whereKey($id)
             ->where('user_id', auth('api')->id())
             ->firstOrFail();
+    }
+
+    private function cajasDisponibles()
+    {
+        $usuarioId = auth('api')->id();
+
+        return Caja::query()->where(function ($query) use ($usuarioId) {
+            $query->where('user_id', $usuarioId)
+                ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+        });
+    }
+
+    private function usuariosElegibles()
+    {
+        return User::query()
+            ->select('users.id', 'users.name', 'users.username')
+            ->whereHas('role', function ($role) {
+                $role->whereRaw('LOWER(nombre) IN (?, ?, ?, ?, ?)', [
+                    'cajero', 'caja', 'admin', 'administrador', 'gerente',
+                ]);
+            })
+            ->orderBy('users.name');
     }
 
     /**

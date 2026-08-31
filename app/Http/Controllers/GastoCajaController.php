@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\CajaActualizadaEvent;
 use App\Http\Requests\AnularGastoCajaRequest;
 use App\Http\Requests\StoreGastoCajaRequest;
 use App\Models\Caja;
@@ -41,6 +42,7 @@ class GastoCajaController extends Controller
                 'usuario_id' => auth('api')->id(),
                 'estado' => 'ACTIVO',
             ])->load('usuario:id,name,username');
+            event(new CajaActualizadaEvent($caja->id, 'gasto_registrado'));
 
             return response()->json([
                 'message' => 'Gasto registrado correctamente.',

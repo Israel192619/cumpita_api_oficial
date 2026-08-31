@@ -57,11 +57,6 @@ class User extends Authenticatable implements JWTSubject
         return $this->belongsTo(EstacionTrabajo::class, 'estacion_id');
     }
 
-    public function puestoActual()
-    {
-        return $this->hasOne(PuestoEstacion::class, 'user_id');
-    }
-    
     public function perfilUsuarios(){
         return $this->hasOne(PerfilUsuario::class, 'user_id');
     }
@@ -69,6 +64,13 @@ class User extends Authenticatable implements JWTSubject
     public function cajas()
     {
         return $this->hasMany(Caja::class);
+    }
+
+    public function cajasCompartidas()
+    {
+        return $this->belongsToMany(Caja::class, 'caja_usuarios')
+            ->withPivot('asignado_por')
+            ->withTimestamps();
     }
 
     public function historialCambiosOrden()

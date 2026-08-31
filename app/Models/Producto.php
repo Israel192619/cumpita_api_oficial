@@ -43,6 +43,11 @@ class Producto extends Model
         return $this->hasMany(HistorialCambioOrden::class, 'producto_id');
     }
 
+    public function ajustesStock()
+    {
+        return $this->hasMany(AjusteStock::class);
+    }
+
     // Relación directa a las opciones asignadas
     public function opciones()
     {

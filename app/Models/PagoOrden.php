@@ -11,6 +11,7 @@ class PagoOrden extends Model
     protected $fillable = [
         'id_orden',
         'caja_id',
+        'user_id',
         'monto_recibido',
         'monto_pagado',
         'cambio_devuelto',
@@ -27,5 +28,10 @@ class PagoOrden extends Model
     public function caja()
     {
         return $this->belongsTo(Caja::class);
+    }
+
+    public function usuario()
+    {
+        return $this->belongsTo(User::class, 'user_id');
     }
 }

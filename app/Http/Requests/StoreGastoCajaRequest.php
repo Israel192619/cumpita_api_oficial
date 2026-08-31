@@ -21,7 +21,7 @@ class StoreGastoCajaRequest extends FormRequest
     {
         return [
             'categoria' => ['required', Rule::in(self::CATEGORIAS)],
-            'concepto' => ['required', 'string', 'max:255'],
+            'concepto' => ['nullable', 'string', 'max:255'],
             'monto' => ['required', 'numeric', 'gt:0'],
         ];
     }

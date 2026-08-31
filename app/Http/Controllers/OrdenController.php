@@ -5,13 +5,17 @@ namespace App\Http\Controllers;
 use App\Events\OrdenCreadaEvent;
 use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\PreordenActualizadaEvent;
+use App\Events\CajaActualizadaEvent;
+use App\Events\StockActualizadoEvent;
 use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
 use App\Models\PagoOrden;
 use App\Models\Cliente;
+use App\Models\Caja;
 use App\Models\Producto;
+use App\Models\ReservaStock;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -54,6 +58,7 @@ class OrdenController extends Controller
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
             'observaciones' => 'nullable|string',
+            'reserva_sesion_id' => 'nullable|uuid',
             'items' => 'required|array|min:1',
             'items.*.producto_id' => 'required|exists:productos,id',
             'items.*.cantidad' => 'required|integer|min:1',
@@ -86,6 +91,10 @@ class OrdenController extends Controller
         }
         DB::beginTransaction();
         try {
+            // Bloqueamos el stock en un orden estable: reserva y venta no pueden
+            // confirmar las últimas unidades al mismo tiempo.
+            $productos = Producto::with('estacion')->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
+                ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
             $userActual = auth('api')->user();
             $clienteId = null;
             if ($request->cliente_id) {
@@ -171,17 +180,16 @@ class OrdenController extends Controller
                 }
             }
 
+            if ($request->filled('reserva_sesion_id')) {
+                ReservaStock::where('sesion_id', $request->reserva_sesion_id)->delete();
+            }
+
             DB::commit();
 
             if ($orden->esPreordenProgramada()) {
                 $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_creada'), 'preorden_creada', $orden->id);
             } else {
                 $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
-                try {
-                    app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
-                } catch (\Throwable $e) {
-                    // La asignación automática no invalida una orden confirmada.
-                }
             }
 
             return response()->json([
@@ -238,6 +246,7 @@ class OrdenController extends Controller
             'total' => 'nullable|numeric|min:0',
             'estado' => 'nullable|in:pendiente,preparando,listo,entregado,cancelado',
             'observaciones' => 'nullable|string',
+            'expected_version' => 'required|integer|min:1',
             'items' => 'nullable|array|min:1',
             'items.*.producto_id' => 'required_with:items|exists:productos,id',
             'items.*.orden_detalle_id' => 'nullable|integer',
@@ -257,6 +266,10 @@ class OrdenController extends Controller
             $historialIds = [];
             $ordenActualizada = DB::transaction(function () use ($request, $id, &$historialIds) {
                 $orden = Orden::lockForUpdate()->findOrFail($id);
+                abort_if((int) $orden->version !== (int) $request->expected_version, 409,
+                    'Esta orden fue modificada por otro cajero. Actualízala antes de guardar para no perder cambios.');
+                abort_if($orden->estado === 'cancelado', 422,
+                    'Una orden cancelada no puede editarse. Crea una nueva orden si el cliente vuelve a pedir.');
                 $this->autorizarMeseroSobrePreorden($orden);
                 $usuarioId = auth('api')->id();
                 $estadoAnterior = $orden->estado;
@@ -346,6 +359,7 @@ class OrdenController extends Controller
                 $orden->estado_pago = $pagosTotales <= 0
                     ? 'pendiente'
                     : ($pagosTotales < (float) $orden->total ? 'parcial' : 'completado');
+                $orden->version = (int) $orden->version + 1;
                 $orden->save();
 
                 return $orden->fresh([
@@ -384,6 +398,107 @@ class OrdenController extends Controller
         }
     }
 
+    /**
+     * Cancela una venta sin borrar su evidencia: mantiene productos y pagos originales,
+     * repone stock y registra una devolución que deja el saldo financiero en cero.
+     */
+    public function cancelarVenta(Request $request, string $id)
+    {
+        $request->validate([
+            'expected_version' => 'required|integer|min:1',
+            'metodo_pago' => 'nullable|in:efectivo,qr',
+        ]);
+
+        try {
+            [$ordenCancelada, $cajaId, $historialIds, $stocksRepuestos] = DB::transaction(function () use ($request, $id) {
+                $orden = Orden::lockForUpdate()->findOrFail($id);
+
+                abort_if((int) $orden->version !== (int) $request->expected_version, 409,
+                    'Esta orden fue modificada por otro cajero. Actualízala antes de cancelarla.');
+                abort_if($orden->estado === 'cancelado', 422, 'La orden ya fue cancelada.');
+
+                $pagado = round((float) PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado'), 2);
+                $cajaId = null;
+
+                if ($pagado > 0) {
+                    abort_unless($request->filled('metodo_pago'), 422,
+                        'Selecciona el método con el que se realizará la devolución.');
+
+                    if ($request->metodo_pago === 'efectivo') {
+                        $usuarioId = auth('api')->id();
+                        $caja = Caja::where(function ($query) use ($usuarioId) {
+                                $query->where('user_id', $usuarioId)
+                                    ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+                            })
+                            ->where('estado', 'abierta')
+                            ->lockForUpdate()
+                            ->first();
+
+                        abort_unless($caja, 422, 'No tienes acceso a una caja abierta para devolver efectivo.');
+                        $cajaId = $caja->id;
+                    }
+                }
+
+                $stocksRepuestos = [];
+                foreach (OrdenDetalle::with('producto')->where('orden_id', $orden->id)->get() as $detalle) {
+                    $producto = Producto::lockForUpdate()->find($detalle->producto_id);
+                    if ($producto && $producto->maneja_stock && $producto->stock !== null) {
+                        $producto->increment('stock', (int) $detalle->cantidad);
+                        $stocksRepuestos[$producto->id] = (int) $producto->fresh()->stock;
+                    }
+                }
+
+                if ($pagado > 0) {
+                    PagoOrden::create([
+                        'id_orden' => $orden->id,
+                        'caja_id' => $cajaId,
+                        'user_id' => auth('api')->id(),
+                        'monto_recibido' => -$pagado,
+                        'monto_pagado' => -$pagado,
+                        'cambio_devuelto' => 0,
+                        'metodo_pago' => $request->metodo_pago,
+                        'tipo_pago' => 'devolucion',
+                        'fecha_pago' => now(),
+                    ]);
+                }
+
+                $historialIds = [];
+                $estadoAnterior = $orden->estado;
+                $orden->update([
+                    'estado' => 'cancelado',
+                    // Una orden cancelada no debe reaparecer como deuda pendiente.
+                    'estado_pago' => 'completado',
+                    'version' => (int) $orden->version + 1,
+                ]);
+                $this->registrarCambio(
+                    $orden, null, null, 'orden_cancelada', null, null,
+                    ['estado' => $estadoAnterior, 'monto_pagado' => $pagado],
+                    ['estado' => 'cancelado', 'monto_devuelto' => $pagado],
+                    auth('api')->id(), $historialIds,
+                );
+
+                return [$orden->fresh(['pagos', 'detalles.producto']), $cajaId, $historialIds, $stocksRepuestos];
+            });
+
+            $this->emitirEventoSeguro(new OrdenCocinaActualizadaEvent($ordenCancelada, $historialIds), 'orden_cancelada', $ordenCancelada->id);
+            if ($cajaId) {
+                event(new CajaActualizadaEvent($cajaId, 'devolucion_orden'));
+            }
+            foreach ($stocksRepuestos as $productoId => $stockFinal) {
+                event(new StockActualizadoEvent((int) $productoId, (int) $stockFinal));
+            }
+
+            return response()->json([
+                'message' => 'Orden cancelada y devolución registrada correctamente.',
+                'orden' => $ordenCancelada,
+            ]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'No se pudo cancelar la orden.', 'error' => $e->getMessage()], 500);
+        }
+    }
+
     public function activarPreorden(string $id)
     {
         try {
@@ -406,11 +521,6 @@ class OrdenController extends Controller
 
             $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_activada'), 'preorden_activada', $orden->id);
             $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
-            try {
-                app(\App\Services\PuestoCocinaService::class)->procesarNuevaOrden($orden);
-            } catch (\Throwable $e) {
-                Log::warning('No se pudo asignar automáticamente la preorden activada.', ['orden_id' => $orden->id, 'error' => $e->getMessage()]);
-            }
 
             return response()->json(['message' => 'Preorden activada correctamente.', 'orden' => $orden]);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {

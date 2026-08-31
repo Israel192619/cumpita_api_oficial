@@ -20,7 +20,6 @@ class DatabaseSeeder extends Seeder
         $this->call(CategoriaSeeder::class);
         $this->call(MesaSeeder::class);
         $this->call(ModificadorSeeder::class);
-        $this->call(PuestoEstacionSeeder::class);
         $this->call(ProductoSeeder::class);
     }
 }

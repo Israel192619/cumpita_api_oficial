@@ -18,8 +18,11 @@ class ServicioController extends Controller
 {
     private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
 
-    public function index(KdsEstacionService $kds)
+    public function index(Request $request, KdsEstacionService $kds)
     {
+        $fecha = $request->validate([
+            'fecha' => ['nullable', 'date_format:Y-m-d'],
+        ])['fecha'] ?? now()->toDateString();
         $usuario = $this->usuarioConAcceso();
         $esMesero = $this->esMesero($usuario);
         if ($this->esSesionServicio()) {
@@ -29,7 +32,8 @@ class ServicioController extends Controller
             'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion',
             'mesero:id,name',
-        ])->operativas()->whereNotIn('estado', ['entregado', 'cancelado'])->orderBy('created_at');
+        ])->operativas()->deFechaOperativa($fecha)
+            ->whereNotIn('estado', ['entregado', 'cancelado'])->orderBy('created_at');
 
         $ordenes = (clone $base)->get();
         $kds->sincronizar($ordenes->pluck('detalles')->flatten());
@@ -39,6 +43,7 @@ class ServicioController extends Controller
             'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            ->whereDate('fecha_programada', $fecha)
             ->orderBy('fecha_programada')->get();
 
         return response()->json([
