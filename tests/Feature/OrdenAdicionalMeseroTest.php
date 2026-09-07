@@ -67,10 +67,10 @@ class OrdenAdicionalMeseroTest extends TestCase
         foreach (['1050', 'Ana', '8'] as $termino) {
             $this->withToken($token)->getJson('/api/servicio/ordenes/buscar?q='.$termino)
                 ->assertOk()->assertJsonPath('ordenes.0.id', $orden->id)
-                ->assertJsonPath('ordenes.0.puede_agregar', false);
+                ->assertJsonPath('ordenes.0.puede_agregar', true);
         }
         $this->withToken($token)->getJson('/api/servicio/ordenes/'.$orden->id)
-            ->assertOk()->assertJsonPath('orden.puede_agregar', false);
+            ->assertOk()->assertJsonPath('orden.puede_agregar', true);
     }
 
     public function test_preorden_programada_se_bloquea_y_activada_admite_adicional(): void
@@ -101,13 +101,39 @@ class OrdenAdicionalMeseroTest extends TestCase
         $this->withToken($tokenMesero)->postJson('/api/pagos-ordenes', [])->assertForbidden();
     }
 
+    public function test_entregada_admite_adicional_y_regresa_a_atencion(): void
+    {
+        Event::fake([OrdenCocinaActualizadaEvent::class]);
+        [$mesero, $orden, $producto] = $this->escenario();
+        $orden->update(['estado' => 'entregado', 'entregada_en' => now(), 'mesero_id' => $mesero->id]);
+        $anterior = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id,
+            'estacion_id' => $producto->estacion_id, 'cantidad' => 1, 'precio_unitario' => 20, 'estado_cocina' => 'servido']);
+        $token = JWTAuth::fromUser($mesero);
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", [
+            'producto_id' => $producto->id, 'cantidad' => 1,
+        ])->assertCreated()->assertJsonPath('orden.estado', 'preparando')
+            ->assertJsonPath('orden.total', '60.00')->assertJsonPath('orden.detalles.0.categoria', 'Platos');
+        $this->assertDatabaseHas('ordenes', ['id' => $orden->id, 'entregada_en' => null, 'mesero_id' => $mesero->id]);
+        $this->assertDatabaseHas('orden_detalles', ['id' => $anterior->id, 'estado_cocina' => 'servido']);
+        $this->assertDatabaseHas('orden_detalles', ['orden_id' => $orden->id, 'estado_cocina' => 'pendiente']);
+        $this->withToken($token)->getJson('/api/servicio/fichas')->assertOk()
+            ->assertJsonPath('mis_fichas.0.id', $orden->id)
+            ->assertJsonPath('mis_fichas.0.detalles.0.categoria', 'Platos')
+            ->assertJsonCount(0, 'mis_entregadas');
+        $orden->update(['estado' => 'cancelado']);
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", [
+            'producto_id' => $producto->id, 'cantidad' => 1,
+        ])->assertStatus(422);
+    }
+
     private function escenario(): array
     {
         $role = Role::create(['nombre' => 'Mesero']);
         $mesero = User::factory()->create(['role_id' => $role->id]);
         $cliente = Cliente::create(['nombre' => 'Ana Cliente']);
         $mesa = Mesa::create(['numero' => '8', 'capacidad' => 4, 'estado' => 'ocupada']);
-        $categoria = Categoria::create(['nombre' => 'Platos']);
+        $padre = Categoria::create(['nombre' => 'Platos']);
+        $categoria = Categoria::create(['nombre' => 'Pescados', 'parent_id' => $padre->id]);
         $estacion = EstacionTrabajo::create(['nombre' => 'Parrilla', 'codigo' => 'PARRILLA', 'activa' => true, 'orden' => 1]);
         $producto = Producto::create(['categoria_id' => $categoria->id, 'estacion_id' => $estacion->id,
             'nombre' => 'Pescado', 'precio' => 40, 'activo' => true, 'maneja_stock' => true, 'stock' => 10, 'stock_minimo' => 1]);

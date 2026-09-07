@@ -132,9 +132,8 @@ class KdsAsignacionService
     {
         $orden = Orden::with(['detalles.estadosEstacion'])->find($ordenId);
 
-        // Un estado pendiente por sí solo no basta: si depende de Parrilla y
-        // sigue bloqueado, Cocina no puede hacer nada todavía. En ese caso la
-        // ficha se libera para asignar la siguiente que sí sea atendible.
+        // La ficha conserva su asignación mientras tenga al menos una acción
+        // disponible, aunque otros productos todavía esperen a otra estación.
         return $orden !== null && $this->ordenEsTrabajable($orden, $estacionId);
     }
 
@@ -157,10 +156,9 @@ class KdsAsignacionService
                 continue;
             }
 
-            // Hay un producto pendiente que todavía depende de otra estación.
-            // No asignamos esta ficha para no invitar a servir el pollo, sopa u
-            // otro componente antes de poder entregar el pedido completo.
-            return false;
+            // Este producto aún depende de otra estación, pero no debe anular
+            // el trabajo que sí está disponible dentro de la misma ficha.
+            continue;
         }
 
         return $hayTrabajoDisponible;

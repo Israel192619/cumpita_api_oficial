@@ -9,13 +9,15 @@ class AjusteStock extends Model
     protected $table = 'ajustes_stock';
 
     protected $fillable = [
-        'producto_id', 'tipo', 'cantidad', 'stock_anterior', 'stock_final', 'motivo', 'usuario_id', 'revertido_por_ajuste_id',
+        'producto_id', 'modificador_opcion_id', 'tipo', 'cantidad', 'stock_anterior', 'stock_final', 'motivo', 'usuario_id', 'revertido_por_ajuste_id',
     ];
 
     public function producto()
     {
         return $this->belongsTo(Producto::class);
     }
+
+    public function modificadorOpcion() { return $this->belongsTo(ModificadorOpcion::class); }
 
     public function usuario()
     {

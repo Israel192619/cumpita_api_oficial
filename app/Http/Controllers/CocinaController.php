@@ -17,7 +17,11 @@ class CocinaController extends Controller
     private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
 
     
-    public function pedidos(Request $request, KdsAsignacionService $asignaciones)
+    public function pedidos(
+        Request $request,
+        KdsAsignacionService $asignaciones,
+        KdsEstacionService $kds,
+    )
     {
         $fecha = $request->input('fecha', now()->toDateString());
         $estacion = $this->resolverEstacion($request);
@@ -51,9 +55,26 @@ class CocinaController extends Controller
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
         ])->operativas()->deFechaOperativa($fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
-            ->whereHas('detalles.estadosEstacion', fn ($query) => $query
-                ->where('estacion_id', $estacion->id)->whereIn('estado', $activos))
-            ->orderBy('created_at')->get()
+            ->where(function ($query) use ($estacion, $activos) {
+                $query->whereHas('detalles.estadosEstacion', fn ($query) => $query
+                    ->where('estacion_id', $estacion->id)->whereIn('estado', $activos))
+                    ->orWhereHas('detalles.opciones.modificadorOpcion.modificador', fn ($query) => $query
+                        ->where('estacion_id', $estacion->id));
+            })
+            ->orderBy('created_at')->get();
+
+        // Repara estados secundarios faltantes en órdenes creadas antes de
+        // que se sincronizaran las opciones por estación. Sin esto, un pescado
+        // con guarniciones de Cocina solo aparece después de que Parrilla lo
+        // marca listo, aunque debería verse bloqueado desde la activación.
+        $ordenes->each(function (Orden $orden) use ($kds) {
+            $kds->sincronizar($orden->detalles);
+            $orden->detalles->each(fn (OrdenDetalle $detalle) =>
+                $detalle->load('estadosEstacion.estacion:id,nombre,codigo')
+            );
+        });
+
+        $ordenes = $ordenes
             ->map(fn (Orden $orden) => $this->proyectarOrden($orden, $estacion->id, $activos))
             ->filter(fn (array $orden) => count($orden['detalles']) > 0)
             ->values();
@@ -68,21 +89,23 @@ class CocinaController extends Controller
             ->values();
         $ordenes = $ordenes->concat($preordenesTempranas)->values();
 
+        // Recalcular también durante la consulta hace que los indicadores se
+        // recuperen aunque se haya perdido un evento del canal en tiempo real.
+        $asignaciones->sincronizarAsignaciones($estacion->id);
         $porOrden = $asignaciones->asignacionesParaEstacion($estacion->id);
         $ordenes = $ordenes->map(function (array $orden) use ($porOrden) {
             $orden['asignacion'] = $porOrden[$orden['id']] ?? null;
             return $orden;
         })->values();
 
-        // Una preorden ya activada entra con prioridad, pero se coloca después
-        // de la ficha que ya está en preparación para no interrumpirla.
+        // Una preorden activada siempre encabeza el tablero: al ser excepcional,
+        // debe atenderse antes que cualquier orden normal, incluso si esta última
+        // ya había comenzado a prepararse.
         $ordenes = $this->priorizarPreordenesActivadas($ordenes);
 
-        // Los pases liberados por Parrilla se intercalan sin desplazar toda la
-        // cola: tras dos fichas normales entra uno, después se alternan.
-        $ordenes = $estacion->codigo === 'COCINA'
-            ? $this->intercalarPasesListos($ordenes)
-            : $ordenes;
+        // La posición de una ficha no cambia cuando Parrilla libera uno de sus
+        // productos. Solo cambia el estado del producto dentro de la misma
+        // ficha, evitando que el operador pierda de vista el resto del pedido.
 
         $preordenes = Orden::with([
             'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
@@ -164,9 +187,86 @@ class CocinaController extends Controller
 
         $asignaciones->sincronizarAsignaciones($estacion->id);
 
-        event(new OrdenCocinaActualizadaEvent($resultado['orden']));
+        event(new OrdenCocinaActualizadaEvent($resultado['orden'], [], 'kds'));
         unset($resultado['orden']);
         return response()->json($resultado);
+    }
+
+    public function actualizarDetalles(Request $request, KdsEstacionService $kds, KdsAsignacionService $asignaciones)
+    {
+        $data = $request->validate([
+            'ids' => ['required', 'array', 'min:1', 'max:100'],
+            'ids.*' => ['required', 'integer', 'distinct', 'exists:orden_detalles,id'],
+            'estacion_id' => ['required', 'integer', 'exists:estaciones_trabajo,id'],
+            'estado_cocina' => ['required', 'in:pendiente,servido'],
+        ]);
+        $estacion = $this->resolverEstacion($request, (int) $data['estacion_id']);
+
+        $resultado = DB::transaction(function () use ($data, $estacion, $kds) {
+            $detalles = OrdenDetalle::with('orden')->whereIn('id', $data['ids'])
+                ->orderBy('id')->lockForUpdate()->get();
+
+            foreach ($detalles as $detalle) {
+                if ($detalle->orden?->esPreordenProgramada()) {
+                    abort_unless(
+                        $this->puedePrepararPreordenAnticipada($detalle->orden, $estacion),
+                        422,
+                        'La preorden solo puede prepararse en Parrilla durante los últimos 30 minutos.'
+                    );
+                }
+
+                $kds->sincronizarDetalle($detalle);
+                $estado = OrdenDetalleEstacion::where('orden_detalle_id', $detalle->id)
+                    ->where('estacion_id', $estacion->id)->lockForUpdate()->firstOrFail();
+
+                if (
+                    $estacion->codigo === 'PARRILLA'
+                    && $estado->estado === 'servido'
+                    && $data['estado_cocina'] !== 'servido'
+                ) {
+                    $cocinaYaTrabajo = OrdenDetalleEstacion::where('orden_detalle_id', $detalle->id)
+                        ->where('estacion_id', '!=', $estacion->id)
+                        ->whereNotIn('estado', ['pendiente'])->exists();
+                    abort_if($cocinaYaTrabajo, 422, 'No se puede revertir Parrilla porque Cocina ya trabajó este producto.');
+                }
+
+                $estado->update([
+                    'estado' => $data['estado_cocina'],
+                    'fecha_servido' => $data['estado_cocina'] === 'servido' ? now() : null,
+                ]);
+
+                $estados = $detalle->estadosEstacion()->pluck('estado');
+                $completo = $estados->isNotEmpty() && $estados->every(fn ($valor) => in_array($valor, self::ESTADOS_LISTOS, true));
+                $detalle->update([
+                    'estado_cocina' => $completo ? 'servido' : 'pendiente',
+                    'fecha_servido' => $completo ? now() : null,
+                ]);
+            }
+
+            $ordenes = Orden::whereIn('id', $detalles->pluck('orden_id')->unique())
+                ->orderBy('id')->lockForUpdate()->get();
+            foreach ($ordenes as $orden) {
+                $pendiente = OrdenDetalleEstacion::whereHas('detalle', fn ($query) => $query->where('orden_id', $orden->id))
+                    ->whereNotIn('estado', ['servido', 'recogido'])->exists();
+                $orden->update(['estado' => $pendiente ? 'preparando' : 'listo']);
+            }
+
+            return [
+                'detalle_ids' => $detalles->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
+                'ordenes' => $ordenes->map(fn ($orden) => $orden->fresh())->values(),
+            ];
+        });
+
+        $asignaciones->sincronizarAsignaciones($estacion->id);
+        foreach ($resultado['ordenes'] as $orden) event(new OrdenCocinaActualizadaEvent($orden, [], 'kds'));
+
+        return response()->json([
+            'detalle_ids' => $resultado['detalle_ids'],
+            'ordenes' => $resultado['ordenes']->map(fn ($orden) => [
+                'orden_id' => (int) $orden->id,
+                'orden_estado' => $orden->estado,
+            ])->values(),
+        ]);
     }
 
     public function registrarSesion(Request $request, KdsAsignacionService $asignaciones)
@@ -297,18 +397,7 @@ class CocinaController extends Controller
 
         $normales = $ordenes->reject(fn (array $orden) => ($orden['tipo_flujo'] ?? null) === 'preorden'
             && ($orden['estado_preorden'] ?? null) === 'activada')->values();
-        $enPreparacion = $normales->first(fn (array $orden) => collect($orden['detalles'])
-            ->contains(fn (array $detalle) => ($detalle['estado_cocina'] ?? null) === 'en_preparacion'));
-
-        if (!$enPreparacion) return $preordenes->concat($normales)->values();
-
-        $resultado = collect();
-        foreach ($normales as $orden) {
-            $resultado->push($orden);
-            if ($orden['id'] === $enPreparacion['id']) $resultado = $resultado->concat($preordenes);
-        }
-
-        return $resultado->values();
+        return $preordenes->concat($normales)->values();
     }
 
     /** @param \Illuminate\Support\Collection<int, array> $ordenes */

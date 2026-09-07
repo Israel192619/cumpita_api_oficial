@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\ServicioSesionActualizadaEvent;
+use App\Events\ServicioFichaActualizadaEvent;
 use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleEstacion;
 use App\Services\KdsEstacionService;
+use App\Services\ServicioColaboracionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -29,21 +31,31 @@ class ServicioController extends Controller
             $this->asegurarMesero($usuario);
         }
         $base = Orden::with([
-            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
-            'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion',
+            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+            'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
             'mesero:id,name',
         ])->operativas()->deFechaOperativa($fecha)
-            ->whereNotIn('estado', ['entregado', 'cancelado'])->orderBy('created_at');
+            ->whereNotIn('estado', ['entregado', 'cancelado'])
+            ->orderByRaw("CASE WHEN tipo_flujo = 'preorden' AND estado_preorden = 'activada' THEN 0 ELSE 1 END")
+            ->orderBy('created_at');
 
         $ordenes = (clone $base)->get();
         $kds->sincronizar($ordenes->pluck('detalles')->flatten());
         $ordenes->load('detalles.estadosEstacion');
 
+        $entregadas = Orden::with([
+                'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+                'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
+                'mesero:id,name',
+            ])->operativas()->deFechaOperativa($fecha)
+                ->where('estado', 'entregado')
+                ->latest('entregada_en')->get();
+
         $preordenes = Orden::with([
-            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre',
+            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
-            ->whereDate('fecha_programada', $fecha)
+            ->whereDate('fecha_programada', now()->toDateString())
             ->orderBy('fecha_programada')->get();
 
         return response()->json([
@@ -51,6 +63,8 @@ class ServicioController extends Controller
             'mis_fichas' => $esMesero
                 ? $ordenes->where('mesero_id', $usuario->id)->map(fn ($orden) => $this->ficha($orden))->values()
                 : [],
+            'todas_fichas' => $ordenes->concat($entregadas)->map(fn ($orden) => $this->ficha($orden))->values(),
+            'mis_entregadas' => $entregadas->where('mesero_id', $usuario->id)->map(fn ($orden) => $this->ficha($orden))->values(),
             'preordenes_programadas' => $preordenes->map(fn ($orden) => $this->fichaPreorden($orden))->values(),
         ]);
     }
@@ -66,7 +80,7 @@ class ServicioController extends Controller
             if (!$orden->mesero_id) $orden->update(['mesero_id' => $mesero->id, 'tomada_en' => now()]);
             return $orden;
         });
-        $this->notificar($orden);
+        $this->notificar($orden, 'tomada');
         return response()->json(['message' => 'Ficha tomada.', 'orden_id' => $orden->id]);
     }
 
@@ -74,16 +88,56 @@ class ServicioController extends Controller
     {
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($detalle, $mesero, $kds) {
+            $ordenBloqueada = Orden::lockForUpdate()->findOrFail($detalle->orden_id);
             $detalle = OrdenDetalle::with('orden')->lockForUpdate()->findOrFail($detalle->id);
             $this->asegurarOrdenOperativa($detalle->orden);
-            abort_unless($detalle->orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
+            $colaboracion = app(ServicioColaboracionService::class);
+            $estado = $colaboracion->estado($detalle);
+            abort_if($estado['servido'], 409, 'Este producto ya fue entregado.');
+            abort_if($estado['llevando_por_id'] && $estado['llevando_por_id'] !== $mesero->id, 409, 'Otro mesero está llevando este producto.');
+            abort_if(in_array($ordenBloqueada->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
             $kds->sincronizarDetalle($detalle);
             $detalle->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
             $detalle->update(['estado_cocina' => 'servido', 'fecha_servido' => now()]);
+            $colaboracion->registrar($detalle, $mesero->id, 'entregar');
             return $detalle->orden;
         });
-        $this->notificar($orden);
+        $this->notificar($orden, 'colaboracion');
         return response()->json(['message' => 'Producto confirmado.', 'detalle_id' => $detalle->id]);
+    }
+
+    public function colaborar(Request $request, OrdenDetalle $detalle, KdsEstacionService $kds)
+    {
+        $mesero = $this->meseroServicio();
+        $accion = $request->validate(['accion' => ['required', 'in:llevar,cancelar,entregar']])['accion'];
+        $orden = DB::transaction(function () use ($detalle, $mesero, $accion, $kds) {
+            // El mismo bloqueo de ficha serializa colaboraciones, adicionales y cierre.
+            $orden = Orden::lockForUpdate()->findOrFail($detalle->orden_id);
+            $this->asegurarOrdenOperativa($orden);
+            abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
+            $detalle = OrdenDetalle::lockForUpdate()->findOrFail($detalle->id);
+            $colaboracion = app(ServicioColaboracionService::class);
+            $estado = $colaboracion->estado($detalle);
+            $transportista = $estado['llevando_por_id'];
+            abort_if($estado['servido'], 409, 'Este producto ya fue entregado.');
+            if ($accion === 'llevar') {
+                abort_if($transportista !== null, 409, 'Este producto ya está en camino con otro mesero.');
+                $kds->sincronizarDetalle($detalle);
+                $estados = $detalle->estadosEstacion()->get();
+                abort_unless($estados->isNotEmpty() && $estados->every(fn ($item) => in_array($item->estado, self::ESTADOS_LISTOS, true)), 422, 'El producto todavía no está listo para llevar.');
+            } else {
+                abort_unless($transportista !== null, 409, 'Primero indica que llevarás el producto.');
+                abort_unless($transportista === $mesero->id || ($accion === 'cancelar' && $orden->mesero_id === $mesero->id), 403, 'Solo quien lleva el producto puede confirmar su entrega.');
+            }
+            if ($accion === 'entregar') {
+                $detalle->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+                $detalle->update(['estado_cocina' => 'servido', 'fecha_servido' => now()]);
+            }
+            $colaboracion->registrar($detalle, $mesero->id, $accion);
+            return $orden;
+        });
+        $this->notificar($orden, 'colaboracion');
+        return response()->json(['message' => 'Colaboración registrada.', 'orden_id' => $orden->id]);
     }
 
     public function liberar(Orden $orden)
@@ -98,7 +152,7 @@ class ServicioController extends Controller
             $orden->update(['mesero_id' => null, 'tomada_en' => null]);
             return $orden;
         });
-        $this->notificar($orden);
+        $this->notificar($orden, 'liberada');
         return response()->json(['message' => 'Ficha liberada.', 'orden_id' => $orden->id]);
     }
 
@@ -141,7 +195,7 @@ class ServicioController extends Controller
         } catch (\Throwable $e) {
             Log::warning('No se pudo notificar el cierre de Servicio.', ['user_id' => $mesero->id, 'error' => $e->getMessage()]);
         }
-        foreach ($ordenes as $orden) $this->notificar($orden);
+        foreach ($ordenes as $orden) $this->notificar($orden, 'liberada');
 
         return response()->json(['message' => 'Sesión cerrada y fichas liberadas.']);
     }
@@ -153,15 +207,24 @@ class ServicioController extends Controller
             $orden = Orden::with('detalles.estadosEstacion')->lockForUpdate()->findOrFail($orden->id);
             $this->asegurarOrdenOperativa($orden);
             abort_unless($orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
+            abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
+            abort_if($orden->detalles->contains(fn ($detalle) => app(ServicioColaboracionService::class)->estado($detalle)['llevando_por_id'] !== null), 409, 'Hay productos en camino. Confirma su entrega antes de cerrar la ficha.');
             $todosListos = $orden->detalles->isNotEmpty() && $orden->detalles->every(fn ($detalle) =>
                 $detalle->estadosEstacion->isNotEmpty()
                 && $detalle->estadosEstacion->every(fn ($estado) => in_array($estado->estado, self::ESTADOS_LISTOS, true))
             );
             abort_unless($todosListos, 422, 'Todos los productos deben estar listos antes de entregar.');
+            foreach ($orden->detalles as $detalle) {
+                if (!app(ServicioColaboracionService::class)->estado($detalle)['servido']) {
+                    $detalle->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+                    $detalle->update(['estado_cocina' => 'servido', 'fecha_servido' => now()]);
+                    app(ServicioColaboracionService::class)->registrar($detalle, $mesero->id, 'entregar');
+                }
+            }
             $orden->update(['estado' => 'entregado', 'entregada_en' => now()]);
             return $orden;
         });
-        $this->notificar($orden);
+        $this->notificar($orden, 'entregada');
         return response()->json(['message' => 'Pedido entregado.', 'orden_id' => $orden->id]);
     }
 
@@ -172,17 +235,24 @@ class ServicioController extends Controller
                 && $detalle->estadosEstacion->every(fn ($estado) => in_array($estado->estado, self::ESTADOS_LISTOS, true));
             return [
                 'id' => $detalle->id, 'cantidad' => $detalle->cantidad, 'producto' => $detalle->producto?->nombre,
+                'categoria' => $detalle->producto?->categoria?->parent?->nombre ?? $detalle->producto?->categoria?->nombre ?? 'Sin categoría',
+                'precio_unitario' => (float) $detalle->precio_unitario,
                 'nota' => $detalle->nota, 'listo' => $listo,
+                ...app(ServicioColaboracionService::class)->estado($detalle),
                 'opciones' => $detalle->opciones->pluck('modificadorOpcion.nombre')->filter()->values(),
             ];
         })->values();
         return [
             'id' => $orden->id, 'numero_orden' => $orden->numero_orden, 'created_at' => $orden->created_at,
+            'entregada_en' => $orden->entregada_en?->toIso8601String(),
             'mesa' => $orden->mesa?->numero, 'cliente' => $orden->cliente?->nombre,
             'tipo_orden' => $orden->tipo_orden,
+            'tipo_flujo' => $orden->tipo_flujo,
+            'estado_preorden' => $orden->estado_preorden,
+            'preorden_activada_en' => $orden->preorden_activada_en?->toIso8601String(),
             'hora' => ($orden->fecha_orden ?? $orden->created_at)?->format('H:i'),
             'tiempo_espera_minutos' => (int) ($orden->fecha_orden ?? $orden->created_at)?->diffInMinutes(now()),
-            'mesero' => $orden->mesero?->name, 'detalles' => $detalles,
+            'mesero' => $orden->mesero?->name, 'mesero_id' => $orden->mesero_id, 'estado' => $orden->estado, 'detalles' => $detalles,
             'listos' => $detalles->where('listo', true)->count(), 'total_items' => $detalles->count(),
             'todo_listo' => $detalles->isNotEmpty() && $detalles->every(fn ($detalle) => $detalle['listo']),
         ];
@@ -202,6 +272,8 @@ class ServicioController extends Controller
                 'id' => $detalle->id,
                 'cantidad' => $detalle->cantidad,
                 'producto' => $detalle->producto?->nombre,
+                'categoria' => $detalle->producto?->categoria?->parent?->nombre ?? $detalle->producto?->categoria?->nombre ?? 'Sin categoría',
+                'precio_unitario' => (float) $detalle->precio_unitario,
                 'nota' => $detalle->nota,
                 'opciones' => $detalle->opciones->pluck('modificadorOpcion.nombre')->filter()->values(),
                 'listo' => false,
@@ -261,9 +333,25 @@ class ServicioController extends Controller
         }
     }
 
-    private function notificar(Orden $orden): void
+    private function notificar(Orden $orden, string $accion = 'actualizada'): void
     {
-        try { event(new OrdenCocinaActualizadaEvent($orden)); }
+        try {
+            $ficha = null;
+            if ($accion === 'liberada') {
+                $orden->load([
+                    'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+                    'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
+                    'mesero:id,name',
+                ]);
+                $ficha = $this->ficha($orden);
+            }
+            $evento = ServicioFichaActualizadaEvent::desdeOrden($orden, $accion, $ficha);
+            if ($accion === 'colaboracion') {
+                $evento->actividad = ['user_id' => auth('api')->id(), 'mensaje' => auth('api')->user()?->name.' actualizó la entrega de productos de tu ficha #'.$orden->numero_orden.'.'];
+            }
+            event($evento);
+            event(new OrdenCocinaActualizadaEvent($orden, [], 'servicio'));
+        }
         catch (\Throwable $e) { Log::warning('No se pudo notificar el cambio de servicio.', ['orden_id' => $orden->id, 'error' => $e->getMessage()]); }
     }
 }

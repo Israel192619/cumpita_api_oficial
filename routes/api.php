@@ -40,8 +40,11 @@ Route::post('/olvide-mi-contrasena', [ReestablecerContrasenaController::class, '
 Route::post('/reestablecer-contrasena', [ReestablecerContrasenaController::class, 'reestablecerContrasena']);
 
 Route::middleware('jwt')->group(function () {
+    Route::get('configuracion', [\App\Http\Controllers\ConfiguracionController::class, 'show']);
+    Route::put('configuracion', [\App\Http\Controllers\ConfiguracionController::class, 'update'])->middleware('access:admin');
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'getUser']);
+    Route::post('/me/profile', [AuthController::class, 'updateUser']);
 
     Route::middleware('access:admin')->group(function () {
         Route::get('dashboard', [DashboardController::class, 'index']);
@@ -58,6 +61,7 @@ Route::middleware('jwt')->group(function () {
         Route::post('ajustes-stock', [AjusteStockController::class, 'store']);
         Route::post('ajustes-stock/{ajuste}/revertir', [AjusteStockController::class, 'revertir']);
         // El formulario de edición consulta GET /mesas/{mesa}; no excluir show.
+        Route::put('mesas-plano', [MesaController::class, 'actualizarPlano']);
         Route::apiResource('mesas', MesaController::class)->except(['index']);
     });
 
@@ -72,14 +76,15 @@ Route::middleware('jwt')->group(function () {
         Route::post('ordenes', [OrdenController::class, 'store']);
         Route::get('ordenes/{orden}', [OrdenController::class, 'show']);
         Route::match(['put', 'patch'], 'ordenes/{orden}', [OrdenController::class, 'update']);
+        Route::post('reservas-stock/sincronizar', [ReservaStockController::class, 'sincronizar']);
+        Route::delete('reservas-stock', [ReservaStockController::class, 'liberar']);
     });
 
     Route::middleware('access:pos')->group(function () {
-        Route::post('reservas-stock/sincronizar', [ReservaStockController::class, 'sincronizar']);
-        Route::delete('reservas-stock', [ReservaStockController::class, 'liberar']);
         Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
         Route::apiResource('clientes', ClienteController::class)->except(['store']);
         Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
+        Route::get('ordenes/{orden}/cancelacion-info', [OrdenController::class, 'informacionCancelacion']);
         Route::post('ordenes/{orden}/cancelar-venta', [OrdenController::class, 'cancelarVenta']);
         Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
         Route::apiResource('ordenes', OrdenController::class)->only(['index', 'destroy']);
@@ -92,11 +97,16 @@ Route::middleware('jwt')->group(function () {
         Route::get('kds/pedidos', [CocinaController::class, 'pedidos']);
         Route::get('kds/preordenes-proximas', [CocinaController::class, 'preordenesProximas']);
         Route::patch('kds/detalles/{detalle}', [CocinaController::class, 'actualizarDetalle']);
+        Route::patch('kds/detalles', [CocinaController::class, 'actualizarDetalles']);
         Route::post('kds/sesion', [CocinaController::class, 'registrarSesion']);
     });
 
     Route::middleware('access:caja')->group(function () {
         Route::get('cajas/actual', [CajaController::class, 'actual']);
+        Route::get('cajas/invitacion-pendiente', [CajaController::class, 'invitacionPendiente']);
+        Route::post('cajas/{caja}/invitacion/aceptar', [CajaController::class, 'aceptarInvitacion']);
+        Route::post('cajas/{caja}/invitacion/rechazar', [CajaController::class, 'rechazarInvitacion']);
+        Route::delete('cajas/{caja}/salir', [CajaController::class, 'salir']);
         Route::post('cajas/abrir', [CajaController::class, 'abrir']);
         Route::post('cajas/{caja}/cerrar', [CajaController::class, 'cerrar']);
         Route::get('cajas/{caja}/usuarios-disponibles', [CajaController::class, 'usuariosDisponibles']);
@@ -114,13 +124,16 @@ Route::middleware('jwt')->group(function () {
     });
 
     Route::middleware('access:servicio')->group(function () {
+        Route::get('servicio/productos', [ProductoController::class, 'index']);
         Route::get('servicio/ordenes/buscar', [OrdenAdicionalController::class, 'buscar']);
         Route::get('servicio/ordenes/{orden}', [OrdenAdicionalController::class, 'show']);
         Route::post('servicio/ordenes/{orden}/adicionales', [OrdenAdicionalController::class, 'store']);
+        Route::post('servicio/preordenes/{orden}/activar', [OrdenController::class, 'activarPreorden']);
         Route::get('servicio/fichas', [ServicioController::class, 'index']);
         Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
         Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);
         Route::post('servicio/fichas/{orden}/liberar', [ServicioController::class, 'liberar']);
+        Route::post('servicio/detalles/{detalle}/colaborar', [ServicioController::class, 'colaborar']);
         Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);
         Route::post('servicio/fichas/{orden}/entregar', [ServicioController::class, 'entregar']);
     });

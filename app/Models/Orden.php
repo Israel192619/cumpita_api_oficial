@@ -92,11 +92,23 @@ class Orden extends Model
             $query->where(function ($query) use ($fecha) {
                 $query->where('tipo_flujo', 'preorden')
                     ->where('estado_preorden', 'activada')
-                    ->whereDate('preorden_activada_en', $fecha);
+                    ->where(function ($query) use ($fecha) {
+                        // La ficha cambia de programada a operativa al activarse.
+                        // fecha_orden se actualiza en ese mismo momento y sirve de
+                        // respaldo si preorden_activada_en aún no está disponible
+                        // en datos antiguos o durante una transición de despliegue.
+                        $query->whereDate('preorden_activada_en', $fecha)
+                            ->orWhereDate('fecha_orden', $fecha);
+                    });
             })->orWhere(function ($query) use ($fecha) {
                 $query->where(function ($query) {
                     $query->where('tipo_flujo', 'normal')->orWhereNull('tipo_flujo');
-                })->whereDate('created_at', $fecha);
+                })->where(function ($query) use ($fecha) {
+                    $query->whereDate('fecha_orden', $fecha)
+                        ->orWhere(function ($query) use ($fecha) {
+                            $query->whereNull('fecha_orden')->whereDate('created_at', $fecha);
+                        });
+                });
             });
         });
     }
@@ -165,6 +177,12 @@ class Orden extends Model
 
     public function getSaldoPendienteAttribute()
     {
+        // Una venta cancelada quedó saldada mediante su devolución. La suma neta
+        // de pagos vuelve a cero, pero eso no significa que deba cobrarse otra vez.
+        if ($this->estado === 'cancelado') {
+            return 0;
+        }
+
         $pagos = $this->relationLoaded('pagos') ? $this->pagos : $this->pagos()->get();
         $pagosTotales = $pagos->sum(function ($pago) {
             return (float) ($pago->monto_pagado ?? 0);

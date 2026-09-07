@@ -17,7 +17,7 @@ class OrdenCocinaActualizadaEvent implements ShouldBroadcast, ShouldDispatchAfte
     /** @param array<int, int> $historialIds */
     public int $ordenId;
 
-    public function __construct(Orden $orden, array $historialIds = [])
+    public function __construct(Orden $orden, array $historialIds = [], public ?string $origen = null)
     {
         $this->ordenId = (int) $orden->getKey();
     }
@@ -34,6 +34,8 @@ class OrdenCocinaActualizadaEvent implements ShouldBroadcast, ShouldDispatchAfte
 
     public function broadcastWith(): array
     {
-        return ['tipo' => 'orden_actualizada', 'orden_id' => $this->ordenId];
+        $payload = ['tipo' => 'orden_actualizada', 'orden_id' => $this->ordenId];
+        if ($this->origen !== null) $payload['origen'] = $this->origen;
+        return $payload;
     }
 }

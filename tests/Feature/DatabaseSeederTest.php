@@ -22,7 +22,7 @@ class DatabaseSeederTest extends TestCase
         $this->assertDatabaseCount('users', 7);
         $this->assertDatabaseCount('perfil_usuarios', 6);
         $this->assertDatabaseCount('categorias', 11);
-        $this->assertDatabaseCount('mesas', 15);
+        $this->assertDatabaseCount('mesas', 19);
         $this->assertDatabaseCount('modificadores', 3);
         $this->assertDatabaseCount('modificador_opciones', 12);
         $this->assertDatabaseCount('productos', 9);
@@ -32,6 +32,10 @@ class DatabaseSeederTest extends TestCase
         $this->assertDatabaseHas('users', ['username' => 'despacho']);
         $this->assertDatabaseHas('productos', ['id' => 11, 'nombre' => 'Jugo grande', 'stock' => 40]);
         $this->assertDatabaseHas('mesas', ['id' => 15, 'numero' => '16', 'capacidad' => 3]);
+        $this->assertDatabaseHas('mesas', ['numero' => '7', 'capacidad' => 4]);
+        $this->assertDatabaseHas('mesas', ['numero' => '17', 'capacidad' => 4]);
+        $this->assertDatabaseHas('mesas', ['numero' => '18', 'capacidad' => 4]);
+        $this->assertDatabaseHas('mesas', ['numero' => '19', 'capacidad' => 4]);
 
         $mesero = User::where('username', 'sam546')->with(['role', 'estacion'])->firstOrFail();
         $this->assertSame('Sam', $mesero->name);

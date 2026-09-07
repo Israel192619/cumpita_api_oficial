@@ -69,7 +69,8 @@ class User extends Authenticatable implements JWTSubject
     public function cajasCompartidas()
     {
         return $this->belongsToMany(Caja::class, 'caja_usuarios')
-            ->withPivot('asignado_por')
+            ->wherePivot('estado', 'aceptada')
+            ->withPivot('asignado_por', 'estado', 'respondida_en')
             ->withTimestamps();
     }
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\CajaActualizadaEvent;
 use App\Http\Requests\AnularMovimientoCajaRequest;
 use App\Http\Requests\StoreMovimientoCajaRequest;
 use App\Models\Caja;
@@ -30,29 +31,56 @@ class MovimientoCajaController extends Controller
      */
     public function store(StoreMovimientoCajaRequest $request)
     {
-        return DB::transaction(function () use ($request) {
-            $caja = Caja::where('user_id', auth('api')->id())
+        $resultado = DB::transaction(function () use ($request) {
+            $usuarioId = (int) auth('api')->id();
+            $caja = Caja::where(function ($query) use ($usuarioId) {
+                    $query->where('user_id', $usuarioId)
+                        ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+                })
                 ->where('estado', 'abierta')
                 ->latest('fecha_apertura')
                 ->lockForUpdate()
                 ->first();
 
             if (!$caja) {
-                return response()->json(['message' => 'No tienes una caja abierta.'], 422);
+                abort(422, 'No tienes acceso a una caja abierta.');
+            }
+
+            if ($request->validated('tipo') === 'RETIRO') {
+                $disponible = round(
+                    (float) $caja->monto_apertura
+                    + (float) $caja->pagos()->where('metodo_pago', 'efectivo')->sum('monto_pagado')
+                    + (float) $caja->movimientos()->where('estado', 'ACTIVO')->where('tipo', 'INGRESO')->sum('monto')
+                    - (float) $caja->movimientos()->where('estado', 'ACTIVO')->where('tipo', 'RETIRO')->sum('monto')
+                    - (float) $caja->gastos()->where('estado', 'ACTIVO')->sum('monto'),
+                    2
+                );
+                abort_if((float) $request->validated('monto') > $disponible, 422,
+                    'El retiro supera el efectivo disponible de la caja (Bs '.number_format($disponible, 2, ',', '.').').');
             }
 
             $movimiento = MovimientoCaja::create([
-                ...$request->validated(),
+                'tipo' => $request->validated('tipo'),
+                'monto' => $request->validated('monto'),
+                'motivo' => $request->validated('motivo'),
                 'caja_id' => $caja->id,
                 'usuario_id' => auth('api')->id(),
                 'estado' => 'ACTIVO',
             ])->load('usuario:id,name,username');
 
-            return response()->json([
+            return [
                 'message' => 'Movimiento registrado correctamente.',
                 'movimiento' => $movimiento,
-            ], 201);
+                'caja_id' => $caja->id,
+            ];
         });
+
+        event(new CajaActualizadaEvent($resultado['caja_id'], 'movimiento_registrado'));
+
+        return response()->json([
+            'message' => $resultado['message'],
+            'movimiento' => $resultado['movimiento'],
+        ], 201);
     }
 
     public function anular(AnularMovimientoCajaRequest $request, string $id)

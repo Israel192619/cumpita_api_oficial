@@ -12,7 +12,7 @@ class MesaController extends Controller
      */
     public function index()
     {
-        $mesas = Mesa::all();
+        $mesas = Mesa::orderByRaw('CAST(numero AS UNSIGNED)')->get();
         return response()->json([
             'mesas' => $mesas
         ], 200);
@@ -80,5 +80,24 @@ class MesaController extends Controller
         return response()->json([
             'message' => 'Mesa eliminada exitosamente.'
         ], 200);
+    }
+
+    public function actualizarPlano(Request $request)
+    {
+        $validated = $request->validate([
+            'mesas' => 'required|array',
+            'mesas.*.id' => 'required|integer|exists:mesas,id',
+            'mesas.*.posicion_x' => 'required|numeric|min:0|max:92',
+            'mesas.*.posicion_y' => 'required|numeric|min:0|max:92',
+        ]);
+
+        foreach ($validated['mesas'] as $posicion) {
+            Mesa::whereKey($posicion['id'])->update([
+                'posicion_x' => $posicion['posicion_x'],
+                'posicion_y' => $posicion['posicion_y'],
+            ]);
+        }
+
+        return response()->json(['message' => 'Plano actualizado correctamente.']);
     }
 }

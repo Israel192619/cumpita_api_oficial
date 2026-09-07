@@ -55,6 +55,11 @@ class Producto extends Model
                     ->withPivot('predeterminado');
     }
 
+    public function configuracionesModificador()
+    {
+        return $this->hasMany(ProductoModificadorConfiguracion::class);
+    }
+
     // Relación dinámica para obtener los modificadores únicos estructurados
     // public function getModificadoresEstructuradosAttribute()
     // {
@@ -93,9 +98,12 @@ class Producto extends Model
             }]);
         }
 
+        if (!$this->relationLoaded('configuracionesModificador')) $this->load('configuracionesModificador');
+        $configuraciones = $this->configuracionesModificador->keyBy('modificador_id');
+
         return $this->opciones
             ->groupBy('modificador_id')
-            ->map(function ($opciones) {
+            ->map(function ($opciones) use ($configuraciones) {
                 $primerElemento = $opciones->first();
                 
                 // Validación por si acaso una opción se quedó sin grupo asignado
@@ -106,13 +114,18 @@ class Producto extends Model
                     'id' => $modificador->id,
                     'nombre' => $modificador->nombre,
                     'tipo' => $modificador->tipo,          // 'unico' o 'multiple'
-                    'requerido' => false,
+                    'requerido' => (bool) $modificador->requerido,
+                    'cantidad_requerida' => $configuraciones->get($modificador->id)?->cantidad_requerida,
                     'opciones' => $opciones->map(function ($opc) {
                         return [
                             'id' => $opc->id,
                             'nombre' => $opc->nombre,
-                            'precio_extra' => $opc->precio_extra,
-                            'activo' => $opc->activo,
+                        'precio_extra' => $opc->precio_extra,
+                        'activo' => $opc->activo,
+                        'maneja_stock' => $opc->maneja_stock,
+                        'stock' => $opc->stock,
+                        'stock_minimo' => $opc->stock_minimo,
+                        'stock_disponible' => $opc->maneja_stock && $opc->stock !== null ? max(0, (int) $opc->stock) : null,
                             'predeterminado' => (bool) $opc->pivot->predeterminado // Tu lógica de pivote funciona perfecto
                         ];
                     })->values()

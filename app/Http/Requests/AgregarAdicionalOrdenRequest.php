@@ -18,7 +18,8 @@ class AgregarAdicionalOrdenRequest extends FormRequest
             'cantidad' => ['required', 'integer', 'min:1', 'max:20'],
             'nota' => ['nullable', 'string', 'max:255'],
             'modificador_opcion_ids' => ['nullable', 'array'],
-            'modificador_opcion_ids.*' => ['integer', 'distinct', 'exists:modificador_opciones,id'],
+            // Los IDs repetidos representan dos unidades de la misma pieza (p. ej. Ala + Ala).
+            'modificador_opcion_ids.*' => ['integer', 'exists:modificador_opciones,id'],
         ];
     }
 }

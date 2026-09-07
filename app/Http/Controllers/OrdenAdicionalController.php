@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Events\OrdenCocinaActualizadaEvent;
+use App\Events\ServicioFichaActualizadaEvent;
 use App\Http\Requests\AgregarAdicionalOrdenRequest;
 use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
@@ -10,6 +11,7 @@ use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
 use App\Models\PagoOrden;
 use App\Models\Producto;
+use App\Models\ModificadorOpcion;
 use App\Services\KdsEstacionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,12 +26,13 @@ class OrdenAdicionalController extends Controller
         $termino = trim($data['q']);
 
         $ordenes = Orden::with(['cliente:id,nombre', 'mesa:id,numero'])
+            ->deFechaOperativa(now()->toDateString())
             ->where(function ($query) use ($termino) {
                 $query->where('numero_orden', 'like', "%{$termino}%")
                     ->orWhereHas('cliente', fn ($cliente) => $cliente->where('nombre', 'like', "%{$termino}%"))
                     ->orWhereHas('mesa', fn ($mesa) => $mesa->where('numero', 'like', "%{$termino}%"));
             })
-            ->latest()->get()
+            ->latest()->limit(15)->get()
             ->map(fn (Orden $orden) => $this->resumen($orden));
 
         return response()->json(['ordenes' => $ordenes]);
@@ -51,7 +54,7 @@ class OrdenAdicionalController extends Controller
             $orden = Orden::lockForUpdate()->findOrFail($orden->id);
             $this->asegurarModificable($orden);
 
-            $producto = Producto::with(['estacion', 'opciones.modificador'])->lockForUpdate()
+            $producto = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador'])->lockForUpdate()
                 ->findOrFail($request->integer('producto_id'));
             abort_unless($producto->activo && $producto->estacion_id && $producto->estacion?->activa, 422, 'El producto no está disponible para producción.');
 
@@ -61,17 +64,35 @@ class OrdenAdicionalController extends Controller
                 $producto->decrement('stock', $cantidad);
             }
 
-            $idsSeleccionados = collect($request->input('modificador_opcion_ids', []))->map(fn ($id) => (int) $id)->unique();
+            // Se conservan repetidos: Ala + Ala consume dos unidades del mismo inventario.
+            $idsSeleccionados = collect($request->input('modificador_opcion_ids', []))->map(fn ($id) => (int) $id);
             $opcionesDisponibles = $producto->opciones->filter(fn ($opcion) => $opcion->activo)->keyBy('id');
             abort_if($idsSeleccionados->diff($opcionesDisponibles->keys())->isNotEmpty(), 422, 'Una opción seleccionada no pertenece al producto.');
 
-            foreach ($opcionesDisponibles->groupBy('modificador_id') as $grupo) {
+            foreach ($producto->opciones->filter(fn ($opcion) => $opcion->modificador?->activo)->groupBy('modificador_id') as $grupo) {
                 $modificador = $grupo->first()?->modificador;
-                $seleccionadas = $idsSeleccionados->intersect($grupo->pluck('id'));
-                abort_if($modificador?->tipo === 'unico' && $seleccionadas->count() > 1, 422, 'Solo puedes seleccionar una opción de '.$modificador->nombre.'.');
+                $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador?->id)?->cantidad_requerida;
+                $idsActivos = $grupo->filter(fn ($opcion) => $opcion->activo)->pluck('id');
+                $cantidadSeleccionada = $idsSeleccionados->filter(fn ($id) => $idsActivos->contains($id))->count();
+                abort_if($cantidadRequerida !== null && $cantidadSeleccionada !== (int) $cantidadRequerida, 422,
+                    'Debes elegir exactamente '.$cantidadRequerida.' en '.$modificador->nombre.'.');
+                abort_if($cantidadRequerida === null && $modificador?->requerido && $cantidadSeleccionada === 0, 422,
+                    'Debes elegir una opción de '.$modificador->nombre.'.');
+                abort_if($cantidadRequerida === null && $modificador?->tipo === 'unico' && $cantidadSeleccionada > 1, 422,
+                    'Solo puedes seleccionar una opción de '.$modificador->nombre.'.');
             }
 
             $opciones = $idsSeleccionados->map(fn ($id) => $opcionesDisponibles->get($id))->filter();
+            $usoOpciones = $idsSeleccionados->countBy()->map(fn ($usos) => $usos * $cantidad);
+            $opcionesBloqueadas = ModificadorOpcion::whereIn('id', $usoOpciones->keys())
+                ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            foreach ($usoOpciones as $opcionId => $usos) {
+                $opcion = $opcionesBloqueadas->get($opcionId);
+                if ($opcion?->maneja_stock && $opcion->stock !== null) {
+                    abort_if((int) $opcion->stock < $usos, 422, 'No hay suficientes unidades de '.$opcion->nombre.'.');
+                    $opcion->decrement('stock', $usos);
+                }
+            }
             $precioUnitario = (float) $producto->precio;
             $extras = (float) $opciones->sum(fn ($opcion) => (float) $opcion->precio_extra);
             $detalles = collect();
@@ -113,7 +134,8 @@ class OrdenAdicionalController extends Controller
             $orden->update([
                 'subtotal' => $subtotal,
                 'total' => $total,
-                'estado' => $orden->estado === 'listo' ? 'preparando' : $orden->estado,
+                'estado' => in_array($orden->estado, ['listo', 'entregado'], true) ? 'preparando' : $orden->estado,
+                'entregada_en' => null,
                 'estado_pago' => $pagado <= 0 ? 'pendiente' : ($pagado < $total ? 'parcial' : 'completado'),
             ]);
 
@@ -122,6 +144,9 @@ class OrdenAdicionalController extends Controller
 
         try {
             event(new OrdenCocinaActualizadaEvent($resultado['orden']));
+            $evento = ServicioFichaActualizadaEvent::desdeOrden($resultado['orden'], 'adicional');
+            $evento->actividad = ['user_id' => $usuarioId, 'mensaje' => auth('api')->user()?->name.' agregó productos a tu ficha #'.$resultado['orden']->numero_orden.'.'];
+            event($evento);
         } catch (\Throwable $e) {
             Log::warning('No se pudo notificar el adicional de la orden.', ['orden_id' => $orden->id, 'error' => $e->getMessage()]);
         }
@@ -142,7 +167,7 @@ class OrdenAdicionalController extends Controller
         $this->asegurarMesero();
         abort_if($orden->esPreordenProgramada(), 422, 'La preorden está pendiente de activación.');
         abort_unless($orden->tipo_flujo !== 'preorden' || $orden->estado_preorden === 'activada', 422, 'La preorden no está activa.');
-        abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La orden ya no admite adicionales.');
+        abort_if($orden->estado === 'cancelado', 422, 'La orden ya no admite adicionales.');
     }
 
     private function resumen(Orden $orden): array
@@ -154,11 +179,13 @@ class OrdenAdicionalController extends Controller
 
     private function detalle(Orden $orden): array
     {
-        $orden->load(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto:id,nombre', 'detalles.opciones.modificadorOpcion:id,nombre']);
+        $orden->load(['cliente:id,nombre', 'mesa:id,numero', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre', 'detalles.opciones.modificadorOpcion:id,nombre']);
         return [...$this->resumen($orden), 'subtotal' => $orden->subtotal, 'total' => $orden->total,
             'saldo_pendiente' => $orden->saldo_pendiente,
             'detalles' => $orden->detalles->map(fn ($detalle) => [
                 'id' => $detalle->id, 'cantidad' => $detalle->cantidad, 'producto' => $detalle->producto?->nombre,
+                'categoria' => $detalle->producto?->categoria?->parent?->nombre ?? $detalle->producto?->categoria?->nombre ?? 'Sin categoría',
+                'precio_unitario' => (float) $detalle->precio_unitario,
                 'nota' => $detalle->nota, 'opciones' => $detalle->opciones->pluck('modificadorOpcion.nombre')->filter()->values(),
             ])->values()];
     }
@@ -179,7 +206,7 @@ class OrdenAdicionalController extends Controller
 
     private function puedeAgregar(Orden $orden): bool
     {
-        if ($orden->esPreordenProgramada() || in_array($orden->estado, ['entregado', 'cancelado'], true)) return false;
+        if ($orden->esPreordenProgramada() || $orden->estado === 'cancelado') return false;
         return $orden->tipo_flujo !== 'preorden' || $orden->estado_preorden === 'activada';
     }
 }

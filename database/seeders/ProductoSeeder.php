@@ -11,7 +11,7 @@ class ProductoSeeder extends Seeder
     {
         $fechaBase = '2026-08-26 23:07:08';
         $productos = [
-            ['id' => 1, 'categoria_id' => 4, 'estacion_id' => 3, 'nombre' => 'Coca-Cola', 'precio' => 15, 'maneja_stock' => true, 'stock' => 50, 'stock_minimo' => 10, 'created_at' => $fechaBase, 'updated_at' => '2026-08-26 23:45:27'],
+            ['id' => 1, 'categoria_id' => 4, 'estacion_id' => 4, 'nombre' => 'Coca-Cola', 'precio' => 15, 'maneja_stock' => true, 'stock' => 50, 'stock_minimo' => 10, 'created_at' => $fechaBase, 'updated_at' => '2026-08-26 23:45:27'],
             ['id' => 3, 'categoria_id' => 3, 'estacion_id' => 4, 'nombre' => 'Moconchinchi Pequeño', 'precio' => 10, 'maneja_stock' => false, 'stock' => null, 'stock_minimo' => null, 'created_at' => $fechaBase, 'updated_at' => '2026-08-26 23:46:17'],
             ['id' => 4, 'categoria_id' => 3, 'estacion_id' => 4, 'nombre' => 'Moconchinchi Grande', 'precio' => 10, 'maneja_stock' => false, 'stock' => null, 'stock_minimo' => null, 'created_at' => $fechaBase, 'updated_at' => '2026-08-26 23:46:27'],
             ['id' => 5, 'categoria_id' => 5, 'estacion_id' => 2, 'nombre' => 'Pescado mediano', 'precio' => 45, 'maneja_stock' => false, 'stock' => null, 'stock_minimo' => null, 'created_at' => $fechaBase, 'updated_at' => $fechaBase],

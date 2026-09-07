@@ -9,7 +9,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Tymon\JWTAuth\Exceptions\JWTException;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
@@ -181,8 +183,9 @@ class AuthController extends Controller
         }
     }
 
-    public function updateUser(Request $request){
-    try {
+    public function updateUser(Request $request)
+    {
+        try {
         /** @var \App\Models\User $user */
         $user = Auth::user();
 
@@ -190,12 +193,36 @@ class AuthController extends Controller
             return response()->json(['message' => 'User not found'], 404);
         }
 
-        $user->update($request->only(['name', 'email']));
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'username' => ['nullable', 'string', 'min:3', 'max:50', 'regex:/^[a-zA-Z0-9._-]+$/', Rule::unique('users', 'username')->ignore($user->id)],
+            'email' => ['required', 'email', Rule::unique('users', 'email')->ignore($user->id)],
+            'direccion' => ['nullable', 'string', 'max:255'],
+            'numero_celular' => ['nullable', 'string', 'max:20'],
+            'password' => ['nullable', 'string', 'min:8'],
+            'avatar' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+        ]);
 
-        return response()->json($user);
+        $user->fill(collect($validated)->only(['name', 'username', 'email'])->all());
+        if (! empty($validated['password'])) $user->password = Hash::make($validated['password']);
+        $user->save();
+
+        $perfil = $user->perfilUsuarios;
+        $avatar = $perfil?->avatar;
+        if ($request->hasFile('avatar')) {
+            if ($avatar) Storage::disk('public')->delete($avatar);
+            $avatar = $request->file('avatar')->store('avatars', 'public');
+        }
+        $user->perfilUsuarios()->updateOrCreate(['user_id' => $user->id], [
+            'direccion' => $validated['direccion'] ?? null,
+            'numero_celular' => $validated['numero_celular'] ?? null,
+            'avatar' => $avatar,
+        ]);
+
+        return response()->json($user->fresh()->load(['perfilUsuarios', 'estacion', 'role']));
 
     } catch (JWTException $e) {
         return response()->json(['message' => 'Failed to update user'], 500);
     }
-}
+    }
 }

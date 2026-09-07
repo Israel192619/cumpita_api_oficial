@@ -343,6 +343,198 @@ class ServicioControllerTest extends TestCase
         $this->assertSame($juan->id, JWTAuth::setToken($nuevaSesionJuan['token'])->authenticate()->id);
     }
 
+    public function test_colaboracion_conserva_responsable_y_evita_doble_entrega(): void
+    {
+        [$responsable, $ayudante] = $this->meseros();
+        $orden = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 900, 'estado' => 'listo']);
+        $producto = Producto::create(['nombre' => 'Sopa', 'estacion_id' => 1]);
+        $detalle = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1, 'estado_cocina' => 'listo_para_recoger']);
+        $controller = new ServicioController();
+        $kds = app(KdsEstacionService::class);
+        $request = fn ($accion) => Request::create('/', 'POST', ['accion' => $accion]);
+        $this->autenticarServicio($ayudante);
+        $controller->colaborar($request('llevar'), $detalle, $kds);
+        $this->assertSame($responsable->id, $orden->fresh()->mesero_id);
+        $estado = app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh());
+        $this->assertSame($ayudante->id, $estado['llevando_por_id']);
+        $this->autenticarServicio($responsable);
+        foreach (['llevar', 'entregar'] as $accion) {
+            try {
+                $controller->colaborar($request($accion), $detalle, $kds);
+                $this->fail('No debe permitir tomar ni entregar lo que lleva otro mesero.');
+            } catch (HttpExceptionInterface $error) {
+                $this->assertSame($accion === 'llevar' ? 409 : 403, $error->getStatusCode());
+            }
+        }
+        try {
+            $controller->entregar($orden);
+            $this->fail('No debe cerrar mientras hay productos en camino.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(409, $error->getStatusCode());
+        }
+        $this->autenticarServicio($ayudante);
+        $controller->colaborar($request('entregar'), $detalle, $kds);
+        $estado = app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh());
+        $this->assertNull($estado['llevando_por_id']);
+        $this->assertSame($ayudante->name, $estado['entregado_por']);
+        $this->assertTrue($estado['servido']);
+        $this->assertSame('listo', $orden->fresh()->estado);
+        try {
+            $controller->entregar($orden);
+            $this->fail('El ayudante no debe cerrar la ficha.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+        $this->autenticarServicio($responsable);
+        $controller->entregar($orden);
+        $this->assertSame('entregado', $orden->fresh()->estado);
+    }
+
+    public function test_colaboracion_bloquea_pendientes_y_permite_cancelar_traslado(): void
+    {
+        [$responsable, $ayudante] = $this->meseros();
+        $orden = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 901, 'estado' => 'preparando']);
+        $producto = Producto::create(['nombre' => 'Sopa', 'estacion_id' => 1]);
+        $detalle = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1]);
+        $controller = new ServicioController();
+        $kds = app(KdsEstacionService::class);
+        $request = fn ($accion) => Request::create('/', 'POST', ['accion' => $accion]);
+        $this->autenticarServicio($ayudante);
+        try {
+            $controller->colaborar($request('llevar'), $detalle, $kds);
+            $this->fail('No se puede llevar un producto pendiente.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+        $detalle->estadosEstacion()->update(['estado' => 'listo_para_recoger']);
+        $controller->colaborar($request('llevar'), $detalle, $kds);
+        $this->autenticarServicio($responsable);
+        $controller->colaborar($request('cancelar'), $detalle, $kds);
+        $controller->colaborar($request('llevar'), $detalle, $kds);
+        $this->assertSame($responsable->id, app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh())['llevando_por_id']);
+        $this->assertDatabaseCount('historial_cambios_orden', 3);
+        $orden->update(['estado' => 'cancelado']);
+        try {
+            $controller->colaborar($request('entregar'), $detalle, $kds);
+            $this->fail('No se puede colaborar en una ficha cancelada.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+    }
+
+    public function test_colaboracion_tablero_incluye_fichas_ajenas_y_categoria_padre(): void
+    {
+        Schema::table('ordenes', function (Blueprint $table) {
+            $table->timestamp('fecha_orden')->nullable();
+            $table->timestamp('preorden_activada_en')->nullable();
+            $table->timestamp('fecha_programada')->nullable();
+        });
+        Schema::table('productos', fn (Blueprint $table) => $table->unsignedBigInteger('categoria_id')->nullable());
+        Schema::create('categorias', function (Blueprint $table) {
+            $table->id(); $table->string('nombre'); $table->unsignedBigInteger('parent_id')->nullable(); $table->timestamps();
+        });
+        try {
+            [$responsable, $ayudante] = $this->meseros();
+            $padre = \App\Models\Categoria::create(['nombre' => 'Comidas']);
+            $hija = \App\Models\Categoria::create(['nombre' => 'Sopas', 'parent_id' => $padre->id]);
+            $producto = Producto::create(['nombre' => 'Sopa', 'estacion_id' => 1, 'categoria_id' => $hija->id]);
+            $orden = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 902, 'estado' => 'listo']);
+            OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1, 'estado_cocina' => 'listo_para_recoger']);
+            $entregada = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 903, 'estado' => 'entregado']);
+            $this->autenticarServicio($ayudante);
+            $tablero = (new ServicioController())->index(Request::create('/'), app(KdsEstacionService::class))->getData(true);
+            $this->assertCount(2, $tablero['todas_fichas']);
+            $this->assertCount(0, $tablero['mis_fichas']);
+            $this->assertCount(0, $tablero['mis_entregadas']);
+            $this->assertSame($responsable->id, $tablero['todas_fichas'][0]['mesero_id']);
+            $this->assertSame('Comidas', $tablero['todas_fichas'][0]['detalles'][0]['categoria']);
+            $this->assertSame('entregado', $tablero['todas_fichas'][1]['estado']);
+        } finally {
+            Schema::dropIfExists('categorias');
+        }
+    }
+
+    public function test_check_compartido_sin_asignar_y_asignado_conserva_autoria(): void
+    {
+        [$ana, $juan] = $this->meseros();
+        $orden = Orden::create(['user_id' => $ana->id, 'numero_orden' => 904, 'estado' => 'pendiente']);
+        $producto = Producto::create(['nombre' => 'Refresco', 'estacion_id' => 1]);
+        $crear = fn () => OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1]);
+        $refresco = $crear();
+        $otro = $crear();
+        $controller = new ServicioController();
+        $kds = app(KdsEstacionService::class);
+        $colaboracion = app(\App\Services\ServicioColaboracionService::class);
+        $this->autenticarServicio($ana);
+        $controller->confirmarDetalle($refresco, $kds);
+        $this->assertNull($orden->fresh()->mesero_id);
+        $this->assertSame($ana->name, $colaboracion->estado($refresco->fresh())['entregado_por']);
+        $this->autenticarServicio($juan);
+        $controller->tomar($orden);
+        try {
+            $controller->confirmarDetalle($refresco, $kds);
+            $this->fail('Un segundo check no debe cambiar quién lo entregó.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(409, $error->getStatusCode());
+        }
+        $this->autenticarServicio($ana);
+        $controller->confirmarDetalle($otro, $kds);
+        $this->assertSame($juan->id, $orden->fresh()->mesero_id);
+        try {
+            $controller->entregar($orden);
+            $this->fail('Quien ayuda no debe cerrar la ficha.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(403, $error->getStatusCode());
+        }
+        $this->autenticarServicio($juan);
+        $controller->liberar($orden);
+        $this->autenticarServicio($ana);
+        $controller->tomar($orden);
+        $controller->entregar($orden);
+        $this->assertSame('entregado', $orden->fresh()->estado);
+        $this->assertSame($ana->name, $colaboracion->estado($refresco->fresh())['entregado_por']);
+        $this->assertSame($ana->name, $colaboracion->estado($otro->fresh())['entregado_por']);
+    }
+
+    public function test_edicion_conserva_precio_y_estacion_de_producto_vendido_desactivado(): void
+    {
+        Schema::table('productos', function (Blueprint $table) {
+            $table->decimal('precio')->default(0); $table->boolean('activo')->default(true);
+        });
+        Schema::create('estaciones_trabajo', function (Blueprint $table) {
+            $table->id(); $table->string('nombre'); $table->boolean('activa')->default(true);
+        });
+        Schema::create('producto_opciones', function (Blueprint $table) {
+            $table->unsignedBigInteger('producto_id'); $table->unsignedBigInteger('modificador_opcion_id');
+            $table->boolean('predeterminado')->default(false);
+        });
+        Schema::create('producto_modificador_configuraciones', function (Blueprint $table) {
+            $table->id(); $table->unsignedBigInteger('producto_id'); $table->unsignedBigInteger('modificador_id');
+            $table->integer('cantidad_requerida');
+        });
+        try {
+            [$mesero] = $this->meseros();
+            $orden = Orden::create(['user_id' => $mesero->id, 'numero_orden' => 905, 'estado' => 'listo']);
+            $producto = Producto::create(['nombre' => 'Refresco', 'estacion_id' => 1, 'precio' => 10, 'activo' => true]);
+            $detalle = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1,
+                'precio_unitario' => 10, 'estado_cocina' => 'servido']);
+            $producto->update(['precio' => 15, 'activo' => false, 'estacion_id' => 2]);
+            $items = [['orden_detalle_id' => $detalle->id, 'producto_id' => $producto->id, 'cantidad' => 1,
+                'precio_unitario' => 10, 'modificadores' => []]];
+            $historial = [];
+            $metodo = new \ReflectionMethod(\App\Http\Controllers\OrdenController::class, 'sincronizarDetallesOrden');
+            $this->assertFalse($metodo->invokeArgs(new \App\Http\Controllers\OrdenController(), [$orden, $items, $mesero->id, &$historial]));
+            $this->assertSame('10.00', $detalle->fresh()->precio_unitario);
+            $this->assertSame(1, $detalle->fresh()->estacion_id);
+            $this->assertSame('servido', $detalle->fresh()->estado_cocina);
+            $this->assertDatabaseCount('orden_detalles', 1);
+        } finally {
+            Schema::dropIfExists('producto_modificador_configuraciones');
+            Schema::dropIfExists('producto_opciones');
+            Schema::dropIfExists('estaciones_trabajo');
+        }
+    }
+
     private function autenticarServicio(User $mesero): void
     {
         $token = JWTAuth::claims([

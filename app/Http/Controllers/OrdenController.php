@@ -15,7 +15,9 @@ use App\Models\PagoOrden;
 use App\Models\Cliente;
 use App\Models\Caja;
 use App\Models\Producto;
+use App\Models\ModificadorOpcion;
 use App\Models\ReservaStock;
+use App\Models\ReservaStockModificador;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -29,11 +31,46 @@ class OrdenController extends Controller
      */
     public function index(Request $request)
     {
-        $ordenes = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
+        $query = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
             ->withMax('cambiosMesero as ultimo_cambio_mesero_en', 'created_at')
             ->when($request->filled('tipo_flujo'), fn ($query) => $query->where('tipo_flujo', $request->input('tipo_flujo')))
-            ->when($request->filled('estado_preorden'), fn ($query) => $query->where('estado_preorden', $request->input('estado_preorden')))
-            ->orderByDesc('created_at')->get();
+            ->when($request->filled('estado_preorden'), fn ($query) => $query->where('estado_preorden', $request->input('estado_preorden')));
+
+        if ($request->boolean('paginated')) {
+            $request->validate([
+                'page' => 'nullable|integer|min:1',
+                'per_page' => 'nullable|integer|min:5|max:100',
+                'search' => 'nullable|string|max:120',
+                'sort_direction' => 'nullable|in:asc,desc',
+                'date_from' => 'nullable|date',
+                'date_to' => 'nullable|date',
+            ]);
+            $query->when($request->filled('search'), function ($query) use ($request) {
+                $search = trim($request->input('search'));
+                $query->where(function ($query) use ($search) {
+                    $query->where('id', $search)
+                        ->orWhere('numero_orden', 'like', "%{$search}%")
+                        ->orWhere('observaciones', 'like', "%{$search}%")
+                        ->orWhereHas('cliente', fn ($clientQuery) => $clientQuery->where('nombre', 'like', "%{$search}%"));
+                });
+            });
+            $query->when($request->filled('date_from'), fn ($query) => $query->whereRaw('COALESCE(fecha_programada, fecha_orden, created_at) >= ?', [$request->input('date_from')]))
+                ->when($request->filled('date_to'), function ($query) use ($request) {
+                    $to = $request->input('date_to');
+                    if (!str_contains($to, 'T') && !str_contains($to, ' ')) $to .= ' 23:59:59';
+                    $query->whereRaw('COALESCE(fecha_programada, fecha_orden, created_at) <= ?', [$to]);
+                });
+            $sortColumns = ['id', 'numero_orden', 'tipo_orden', 'tipo_flujo', 'fecha_programada', 'total', 'estado', 'created_at'];
+            $sort = in_array($request->input('sort_key'), $sortColumns, true) ? $request->input('sort_key') : 'created_at';
+            $direction = $request->input('sort_direction') === 'asc' ? 'asc' : 'desc';
+            $query->orderBy($sort, $direction);
+            if ($sort !== 'id') {
+                $query->orderBy('id', $direction);
+            }
+            return response()->json(['ordenes' => $query->paginate((int) $request->input('per_page', 10))]);
+        }
+
+        $ordenes = $query->orderByDesc('created_at')->get();
         return response()->json([
             'ordenes' => $ordenes
         ], 200);
@@ -45,6 +82,7 @@ class OrdenController extends Controller
      */
     public function store(Request $request)
     {
+        app(\App\Services\ConfiguracionService::class)->aplicarFechaTrabajo($request, true);
         $validator = Validator::make($request->all(), [
             'cliente_id' => 'nullable|exists:clientes,id',
             'cliente_nombre' => 'nullable|string|max:255',
@@ -77,7 +115,7 @@ class OrdenController extends Controller
         if (!$request->cliente_id && !$request->cliente_nombre) {
             return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
         }
-        $productos = Producto::with('estacion')
+        $productos = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador'])
             ->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
             ->get()
             ->keyBy('id');
@@ -88,6 +126,12 @@ class OrdenController extends Controller
                     'message' => 'El producto seleccionado no tiene una estación de trabajo activa: ' . ($producto?->nombre ?? $item['producto_id']) . '.',
                 ], 422);
             }
+
+            try {
+                $this->validarModificadoresProducto($producto, $item['modificadores'] ?? []);
+            } catch (\RuntimeException $e) {
+                return response()->json(['message' => $e->getMessage()], 422);
+            }
         }
         DB::beginTransaction();
         try {
@@ -95,6 +139,21 @@ class OrdenController extends Controller
             // confirmar las últimas unidades al mismo tiempo.
             $productos = Producto::with('estacion')->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
                 ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            foreach ($request->items as $item) $this->validarPrecioDisponible($productos->get($item['producto_id']), $item);
+            $usoOpciones = collect($request->items)->flatMap(function (array $item) {
+                return collect($item['modificadores'] ?? [])->map(fn (array $opcion) => [
+                    'id' => (int) $opcion['modificador_opcion_id'],
+                    'cantidad' => (int) $item['cantidad'],
+                ]);
+            })->groupBy('id')->map(fn ($opciones) => $opciones->sum('cantidad'));
+            $opcionesConStock = ModificadorOpcion::whereIn('id', $usoOpciones->keys())
+                ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            foreach ($usoOpciones as $opcionId => $cantidad) {
+                $opcion = $opcionesConStock->get($opcionId);
+                if ($opcion?->maneja_stock && $opcion->stock !== null && (int) $opcion->stock < $cantidad) {
+                    throw new \RuntimeException('No hay suficientes unidades de ' . $opcion->nombre . '.');
+                }
+            }
             $userActual = auth('api')->user();
             $clienteId = null;
             if ($request->cliente_id) {
@@ -124,7 +183,7 @@ class OrdenController extends Controller
             $orden = Orden::create([
                 'user_id' => $userActual->id,
                 'cliente_id' => $clienteId,
-                'mesa_id' => $request->mesa_id,
+                'mesa_id' => ($request->tipo_orden ?? 'dine-in') === 'dine-in' ? $request->mesa_id : null,
                 'numero_orden' => $numeroOrden,
                 'fecha_orden' => $request->filled('fecha_orden') ? $request->fecha_orden : null,
                 'fecha_programada' => $tipoFlujo === 'preorden' ? $request->fecha_programada : null,
@@ -155,6 +214,13 @@ class OrdenController extends Controller
                     $producto->save();
                 }
 
+                foreach ($item['modificadores'] ?? [] as $modificador) {
+                    $opcion = $opcionesConStock->get((int) $modificador['modificador_opcion_id']);
+                    if ($opcion?->maneja_stock && $opcion->stock !== null) {
+                        $opcion->decrement('stock', (int) $item['cantidad']);
+                    }
+                }
+
                 // Cada unidad es un detalle independiente para que Cocina, Parrilla y Servicio
                 // puedan finalizarla sin afectar a las demás unidades del mismo producto.
                 for ($unidad = 0; $unidad < (int) $item['cantidad']; $unidad++) {
@@ -177,11 +243,17 @@ class OrdenController extends Controller
                             ]);
                         }
                     }
+
+                    // Las estaciones secundarias dependen de las opciones elegidas.
+                    // Sincronizar al final evita calcularlas con la relación de opciones
+                    // todavía vacía o parcialmente cargada.
+                    app(\App\Services\KdsEstacionService::class)->sincronizarDetalle($ordenDetalle->fresh());
                 }
             }
 
             if ($request->filled('reserva_sesion_id')) {
                 ReservaStock::where('sesion_id', $request->reserva_sesion_id)->delete();
+                ReservaStockModificador::where('sesion_id', $request->reserva_sesion_id)->delete();
             }
 
             DB::commit();
@@ -196,6 +268,9 @@ class OrdenController extends Controller
                 'message' => 'Orden creada exitosamente',
                 'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
             ], 201);
+        } catch (\RuntimeException|\InvalidArgumentException $e) {
+            if (DB::transactionLevel() > 0) DB::rollBack();
+            return response()->json(['message' => $e->getMessage()], 422);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Exception $e) {
@@ -231,6 +306,7 @@ class OrdenController extends Controller
      */
     public function update(Request $request, string $id)
     {
+        app(\App\Services\ConfiguracionService::class)->aplicarFechaTrabajo($request, false);
         $validator = Validator::make($request->all(), [
             'cliente_id' => 'nullable|exists:clientes,id',
             'cliente_nombre' => 'nullable|string|max:255',
@@ -294,6 +370,10 @@ class OrdenController extends Controller
                     if ($request->has($campo)) {
                         $updateData[$campo] = $request->input($campo);
                     }
+                }
+                $tipoOrdenActualizado = $updateData['tipo_orden'] ?? $orden->tipo_orden;
+                if ($tipoOrdenActualizado !== 'dine-in') {
+                    $updateData['mesa_id'] = null;
                 }
                 if ($request->has('cliente_id') || $request->filled('cliente_nombre')) {
                     $updateData['cliente_id'] = $clienteId;
@@ -385,7 +465,7 @@ class OrdenController extends Controller
         } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
         } catch (\Exception $e) {
-            if (str_contains($e->getMessage(), 'No hay suficiente stock') || str_contains($e->getMessage(), 'estación de trabajo activa')) {
+            if ($e instanceof \RuntimeException || $e instanceof \InvalidArgumentException) {
                 return response()->json([
                     'message' => $e->getMessage()
                 ], 422);
@@ -402,6 +482,25 @@ class OrdenController extends Controller
      * Cancela una venta sin borrar su evidencia: mantiene productos y pagos originales,
      * repone stock y registra una devolución que deja el saldo financiero en cero.
      */
+    public function informacionCancelacion(string $id)
+    {
+        $orden = Orden::findOrFail($id);
+        $pagado = round((float) PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado'), 2);
+        $pagoOrigen = $this->pagoOrigenDeOrden($orden->id);
+        $cajaActual = $this->cajaAbiertaDelUsuario((int) auth('api')->id());
+        $disponible = $cajaActual ? $this->efectivoDisponible($cajaActual) : 0;
+
+        return response()->json([
+            'monto_devolucion' => $pagado,
+            'pago_origen_id' => $pagoOrigen?->id,
+            'caja_origen_id' => $pagoOrigen?->caja_id,
+            'caja_origen_estado' => $pagoOrigen?->caja?->estado,
+            'caja_actual_id' => $cajaActual?->id,
+            'efectivo_disponible' => $disponible,
+            'faltante_efectivo' => max(0, round($pagado - $disponible, 2)),
+        ]);
+    }
+
     public function cancelarVenta(Request $request, string $id)
     {
         $request->validate([
@@ -418,6 +517,7 @@ class OrdenController extends Controller
                 abort_if($orden->estado === 'cancelado', 422, 'La orden ya fue cancelada.');
 
                 $pagado = round((float) PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado'), 2);
+                $pagoOrigen = $this->pagoOrigenDeOrden($orden->id);
                 $cajaId = null;
 
                 if ($pagado > 0) {
@@ -426,25 +526,31 @@ class OrdenController extends Controller
 
                     if ($request->metodo_pago === 'efectivo') {
                         $usuarioId = auth('api')->id();
-                        $caja = Caja::where(function ($query) use ($usuarioId) {
-                                $query->where('user_id', $usuarioId)
-                                    ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
-                            })
-                            ->where('estado', 'abierta')
-                            ->lockForUpdate()
-                            ->first();
+                        $caja = $this->cajaAbiertaDelUsuario((int) $usuarioId, true);
 
                         abort_unless($caja, 422, 'No tienes acceso a una caja abierta para devolver efectivo.');
+                        $disponible = $this->efectivoDisponible($caja);
+                        if ($disponible < $pagado) {
+                            $faltante = round($pagado - $disponible, 2);
+                            $origen = $pagoOrigen?->caja_id ? " El cobro original corresponde a la caja #{$pagoOrigen->caja_id}." : '';
+                            abort(422, 'La caja actual #'.$caja->id.' solo dispone de '.$this->montoLegible($disponible)
+                                .' y la devolución requiere '.$this->montoLegible($pagado).'.'.$origen
+                                .' Registra un ingreso o traslado autorizado de '.$this->montoLegible($faltante).' antes de cancelar.');
+                        }
                         $cajaId = $caja->id;
                     }
                 }
 
                 $stocksRepuestos = [];
-                foreach (OrdenDetalle::with('producto')->where('orden_id', $orden->id)->get() as $detalle) {
+                foreach (OrdenDetalle::with(['producto', 'opciones.modificadorOpcion'])->where('orden_id', $orden->id)->get() as $detalle) {
                     $producto = Producto::lockForUpdate()->find($detalle->producto_id);
                     if ($producto && $producto->maneja_stock && $producto->stock !== null) {
                         $producto->increment('stock', (int) $detalle->cantidad);
                         $stocksRepuestos[$producto->id] = (int) $producto->fresh()->stock;
+                    }
+                    foreach ($detalle->opciones as $opcionDetalle) {
+                        $opcion = ModificadorOpcion::lockForUpdate()->find($opcionDetalle->modificador_opcion_id);
+                        if ($opcion?->maneja_stock && $opcion->stock !== null) $opcion->increment('stock', (int) $detalle->cantidad);
                     }
                 }
 
@@ -459,6 +565,8 @@ class OrdenController extends Controller
                         'metodo_pago' => $request->metodo_pago,
                         'tipo_pago' => 'devolucion',
                         'fecha_pago' => now(),
+                        'pago_origen_id' => $pagoOrigen?->id,
+                        'caja_origen_id' => $pagoOrigen?->caja_id,
                     ]);
                 }
 
@@ -499,11 +607,51 @@ class OrdenController extends Controller
         }
     }
 
+    private function pagoOrigenDeOrden(int $ordenId): ?PagoOrden
+    {
+        return PagoOrden::with('caja')
+            ->where('id_orden', $ordenId)
+            ->where('monto_pagado', '>', 0)
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function cajaAbiertaDelUsuario(int $usuarioId, bool $bloquear = false): ?Caja
+    {
+        $query = Caja::where(function ($query) use ($usuarioId) {
+                $query->where('user_id', $usuarioId)
+                    ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+            })
+            ->where('estado', 'abierta');
+
+        if ($bloquear) $query->lockForUpdate();
+
+        return $query->first();
+    }
+
+    private function efectivoDisponible(Caja $caja): float
+    {
+        $pagos = round((float) $caja->pagos()->where('metodo_pago', 'efectivo')->sum('monto_pagado'), 2);
+        $ingresos = round((float) $caja->movimientos()->where('estado', 'ACTIVO')->where('tipo', 'INGRESO')->sum('monto'), 2);
+        $retiros = round((float) $caja->movimientos()->where('estado', 'ACTIVO')->where('tipo', 'RETIRO')->sum('monto'), 2);
+        $gastos = round((float) $caja->gastos()->where('estado', 'ACTIVO')->sum('monto'), 2);
+
+        return round((float) $caja->monto_apertura + $pagos + $ingresos - $retiros - $gastos, 2);
+    }
+
+    private function montoLegible(float $monto): string
+    {
+        return 'Bs '.number_format($monto, 2, ',', '.');
+    }
+
     public function activarPreorden(string $id)
     {
         try {
             $orden = DB::transaction(function () use ($id) {
-                $orden = Orden::with('detalles')->lockForUpdate()->findOrFail($id);
+                $orden = Orden::with([
+                    'detalles.opciones.modificadorOpcion.modificador',
+                    'detalles.estadosEstacion',
+                ])->lockForUpdate()->findOrFail($id);
                 abort_unless($orden->tipo_flujo === 'preorden', 422, 'La orden seleccionada no es una preorden.');
                 abort_if($orden->estado_preorden === 'activada', 409, 'La preorden ya fue activada.');
                 abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede activarse.');
@@ -515,7 +663,14 @@ class OrdenController extends Controller
                     'fecha_orden' => now(),
                     'estado' => 'pendiente',
                 ]);
-                app(\App\Services\KdsEstacionService::class)->sincronizar($orden->detalles);
+                // Al pasar de programada a activa deben existir desde este
+                // instante todos los estados secundarios. Así Cocina muestra
+                // también los productos que siguen esperando a Parrilla.
+                $kds = app(\App\Services\KdsEstacionService::class);
+                foreach ($orden->detalles as $detalle) {
+                    $detalle->unsetRelation('estadosEstacion');
+                    $kds->sincronizarDetalle($detalle);
+                }
                 return $orden->fresh(['cliente', 'mesa', 'detalles.producto', 'detalles.estadosEstacion']);
             });
 
@@ -545,6 +700,14 @@ class OrdenController extends Controller
     }
 
     /** Compara los detalles persistidos con el payload del POS sin recrearlos. */
+    private function validarPrecioDisponible(?Producto $producto, array $item): void
+    {
+        if (!$producto || !$producto->activo) throw new \RuntimeException(($producto?->nombre ?? 'El producto').' está desactivado. Retíralo del carrito.');
+        if (round((float) $producto->precio, 2) !== round((float) $item['precio_unitario'], 2)) {
+            throw new \RuntimeException('El precio de '.$producto->nombre.' cambió a '.$producto->precio.'. Actualiza el carrito antes de continuar.');
+        }
+    }
+
     private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): bool
     {
         // El POS puede enviar una línea con cantidad mayor a uno. Internamente cada unidad
@@ -564,17 +727,51 @@ class OrdenController extends Controller
         })->values()->all();
 
         $detallesExistentes = $orden->detalles()
-            ->with(['producto', 'estacion', 'opciones'])
+            ->with(['producto', 'estacion', 'opciones.modificadorOpcion'])
             ->lockForUpdate()
             ->get()
             ->keyBy('id');
+        $idsSolicitados = collect($items)
+            ->pluck('orden_detalle_id')
+            ->filter(fn ($id) => $id !== null)
+            ->map(fn ($id) => (int) $id);
+        if ($idsSolicitados->duplicates()->isNotEmpty()
+            || $idsSolicitados->contains(fn ($id) => !$detallesExistentes->has($id))) {
+            throw new \RuntimeException('Uno de los detalles enviados no pertenece a esta orden.');
+        }
+
+        // Una línea agrupada del POS conserva un ID y expande el resto como unidades nuevas.
+        // Primero devolvemos al inventario las unidades antiguas que serán reemplazadas para
+        // que el stock disponible no se valide dos veces durante una edición.
+        $detallesExistentes
+            ->filter(fn (OrdenDetalle $detalle) => !$idsSolicitados->contains((int) $detalle->id))
+            ->each(function (OrdenDetalle $detalle) use ($orden, $usuarioId, &$historialIds) {
+                $this->ajustarStock($detalle->producto, -(int) $detalle->cantidad);
+                $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
+                $this->registrarCambio(
+                    $orden, $detalle, $detalle->producto, 'detalle_eliminado', (int) $detalle->cantidad,
+                    null, $this->datosDetalle($detalle), null, $usuarioId, $historialIds,
+                );
+                $detalle->opciones()->delete();
+                $detalle->delete();
+            });
+
         $idsRecibidos = [];
         $huboUnidadesNuevas = false;
 
         foreach ($items as $item) {
             $detalleId = $item['orden_detalle_id'] ?? null;
-            $productoNuevo = Producto::with('estacion')->findOrFail($item['producto_id']);
-            $this->asegurarEstacionActiva($productoNuevo);
+            $productoNuevo = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador'])->lockForUpdate()->findOrFail($item['producto_id']);
+            $existente = $detalleId ? $detallesExistentes->get($detalleId) : null;
+            if (!$existente || $existente->producto_id !== $productoNuevo->id) {
+                $this->validarPrecioDisponible($productoNuevo, $item);
+                $this->asegurarEstacionActiva($productoNuevo);
+                $this->validarModificadoresProducto($productoNuevo, $item['modificadores'] ?? []);
+            } elseif (round((float) $existente->precio_unitario, 2) !== round((float) $item['precio_unitario'], 2)) {
+                throw new \RuntimeException('El precio de un producto ya vendido debe conservarse.');
+            } elseif ($this->opcionesCambian($existente, $item['modificadores'] ?? [])) {
+                $this->validarModificadoresProducto($productoNuevo, $item['modificadores'] ?? []);
+            }
             $cantidadNueva = (int) $item['cantidad'];
 
             if ($detalleId) {
@@ -619,6 +816,8 @@ class OrdenController extends Controller
 
                 $opcionesCambiaron = $this->opcionesCambian($detalle, $item['modificadores'] ?? []);
                 if ($opcionesCambiaron) {
+                    $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
+                    $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
                     $detalle->opciones()->delete();
                     $this->crearOpcionesDetalle($detalle, $item['modificadores'] ?? []);
                 }
@@ -641,6 +840,7 @@ class OrdenController extends Controller
             }
 
             $this->ajustarStock($productoNuevo, $cantidadNueva);
+            $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
             $detalle = OrdenDetalle::create([
                 'orden_id' => $orden->id,
                 'producto_id' => $productoNuevo->id,
@@ -669,18 +869,6 @@ class OrdenController extends Controller
             );
         }
 
-        $detallesExistentes
-            ->filter(fn (OrdenDetalle $detalle) => !isset($idsRecibidos[$detalle->id]))
-            ->each(function (OrdenDetalle $detalle) use ($orden, $usuarioId, &$historialIds) {
-                $this->ajustarStock($detalle->producto, -(int) $detalle->cantidad);
-                $this->registrarCambio(
-                    $orden, $detalle, $detalle->producto, 'detalle_eliminado', (int) $detalle->cantidad,
-                    null, $this->datosDetalle($detalle), null, $usuarioId, $historialIds,
-                );
-                $detalle->opciones()->delete();
-                $detalle->delete();
-            });
-
         return $huboUnidadesNuevas;
     }
 
@@ -703,6 +891,52 @@ class OrdenController extends Controller
     {
         if (!$producto->estacion_id || !$producto->estacion?->activa) {
             throw new \RuntimeException('El producto ' . $producto->nombre . ' no tiene una estación de trabajo activa.');
+        }
+    }
+
+    /** Valida pertenencia y la cantidad seleccionada en cada grupo. */
+    private function validarModificadoresProducto(Producto $producto, array $modificadores): void
+    {
+        $elegidas = collect($modificadores)->pluck('modificador_opcion_id')->map(fn ($id) => (int) $id);
+        $gruposActivos = $producto->opciones
+            ->filter(fn ($opcion) => $opcion->modificador?->activo)
+            ->groupBy('modificador_id');
+        $opcionesActivas = $gruposActivos->flatten()->filter(fn ($opcion) => $opcion->activo);
+        $permitidas = $opcionesActivas->pluck('id');
+        if ($elegidas->diff($permitidas)->isNotEmpty()) {
+            throw new \RuntimeException('Una opción elegida no pertenece al producto ' . $producto->nombre . '.');
+        }
+        $gruposActivos
+            ->each(function ($opciones) use ($elegidas, $producto) {
+                $modificador = $opciones->first()->modificador;
+                $idsActivos = $opciones->filter(fn ($opcion) => $opcion->activo)->pluck('id');
+                $cantidad = $elegidas->filter(fn ($id) => $idsActivos->contains($id))->count();
+                $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_requerida;
+                if ($cantidadRequerida !== null && $cantidad !== (int) $cantidadRequerida) {
+                    throw new \RuntimeException('Debes elegir exactamente ' . $cantidadRequerida . ' en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
+                }
+                if ($cantidadRequerida === null && $modificador->requerido && $cantidad === 0) {
+                    throw new \RuntimeException('Debes elegir una opción en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
+                }
+                if ($cantidadRequerida === null && $modificador->tipo === 'unico' && $cantidad > 1) {
+                    throw new \RuntimeException('Solo puedes elegir una opción en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
+                }
+            });
+    }
+
+    /** $diferencia positiva descuenta; negativa devuelve al inventario compartido. */
+    private function ajustarStockOpcionesPorIds(array $opcionIds, int $diferencia): void
+    {
+        if ($diferencia === 0 || empty($opcionIds)) return;
+        foreach (collect($opcionIds)->countBy() as $opcionId => $cantidad) {
+            $opcion = ModificadorOpcion::lockForUpdate()->findOrFail($opcionId);
+            if ($opcion->maneja_stock && $opcion->stock !== null) {
+                if ($diferencia > 0 && $opcion->stock < $cantidad * $diferencia) {
+                    throw new \RuntimeException('No hay suficientes unidades de ' . $opcion->nombre . '.');
+                }
+                $opcion->stock -= $cantidad * $diferencia;
+                $opcion->save();
+            }
         }
     }
 
@@ -735,6 +969,8 @@ class OrdenController extends Controller
 
     private function datosDetalle(OrdenDetalle $detalle): array
     {
+        $detalle->loadMissing(['producto', 'estacion', 'opciones.modificadorOpcion']);
+
         return [
             'detalle_id' => $detalle->id,
             'producto_id' => $detalle->producto_id,
@@ -744,6 +980,11 @@ class OrdenController extends Controller
             'cantidad' => (int) $detalle->cantidad,
             'precio_unitario' => (float) $detalle->precio_unitario,
             'nota' => $detalle->nota,
+            'modificadores' => $detalle->opciones
+                ->map(fn ($opcion) => $opcion->modificadorOpcion?->nombre)
+                ->filter()
+                ->values()
+                ->all(),
         ];
     }
 

@@ -17,7 +17,7 @@ class StoreMovimientoCajaRequest extends FormRequest
         return [
             'tipo' => ['required', Rule::in(['INGRESO', 'RETIRO'])],
             'monto' => ['required', 'numeric', 'gt:0'],
-            'motivo' => ['required', 'string', 'max:255'],
+            'motivo' => ['nullable', 'string', 'max:255'],
         ];
     }
 }

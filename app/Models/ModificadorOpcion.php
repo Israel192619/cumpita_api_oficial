@@ -7,10 +7,13 @@ use Illuminate\Database\Eloquent\Model;
 class ModificadorOpcion extends Model
 {
     protected $table = 'modificador_opciones';
-    protected $fillable = ['modificador_id', 'nombre', 'precio_extra', 'activo'];
+    protected $fillable = ['modificador_id', 'nombre', 'precio_extra', 'activo', 'maneja_stock', 'stock', 'stock_minimo'];
     protected $casts = [
         'precio_extra' => 'decimal:2',
         'activo' => 'boolean',
+        'maneja_stock' => 'boolean',
+        'stock' => 'integer',
+        'stock_minimo' => 'integer',
     ];
 
     public function modificador()

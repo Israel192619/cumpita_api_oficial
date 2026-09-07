@@ -18,6 +18,8 @@ class PagoOrden extends Model
         'metodo_pago',
         'tipo_pago',
         'fecha_pago',
+        'pago_origen_id',
+        'caja_origen_id',
     ];
 
     public function orden()
@@ -33,5 +35,15 @@ class PagoOrden extends Model
     public function usuario()
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function pagoOrigen()
+    {
+        return $this->belongsTo(self::class, 'pago_origen_id');
+    }
+
+    public function cajaOrigen()
+    {
+        return $this->belongsTo(Caja::class, 'caja_origen_id');
     }
 }

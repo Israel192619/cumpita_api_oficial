@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Modificador;
 use App\Models\ModificadorOpcion;
+use App\Models\AjusteStock;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class ModificadorController extends Controller
 {
@@ -41,7 +43,11 @@ class ModificadorController extends Controller
             'opciones.*.nombre' => 'required|string|max:255',
             'opciones.*.precio_extra' => 'required|numeric|min:0',
             'opciones.*.activo' => 'boolean',
+            'opciones.*.maneja_stock' => 'sometimes|boolean',
+            'opciones.*.stock' => 'nullable|integer|min:0',
+            'opciones.*.stock_minimo' => 'nullable|integer|min:0',
         ]);
+        $validatedData['opciones'] = $this->normalizarStockOpciones($validatedData['opciones']);
 
         try {
             $modificador = DB::transaction(function () use ($validatedData) {
@@ -49,7 +55,7 @@ class ModificadorController extends Controller
                 $nuevoModificador = Modificador::create([
                     'nombre' => $validatedData['nombre'],
                     'tipo' => $validatedData['tipo'],
-                    'requerido' => false,
+                    'requerido' => $validatedData['requerido'] ?? false,
                     'activo' => $validatedData['activo'] ?? true,
                     'estacion_id' => $validatedData['estacion_id'] ?? null,
                 ]);
@@ -104,7 +110,11 @@ class ModificadorController extends Controller
             'opciones.*.nombre' => 'required|string|max:255',
             'opciones.*.precio_extra' => 'required|numeric|min:0',
             'opciones.*.activo' => 'boolean',
+            'opciones.*.maneja_stock' => 'sometimes|boolean',
+            'opciones.*.stock' => 'nullable|integer|min:0',
+            'opciones.*.stock_minimo' => 'nullable|integer|min:0',
         ]);
+        $data['opciones'] = $this->normalizarStockOpciones($data['opciones']);
 
         try {
             DB::transaction(function () use ($data, $modificadore) {
@@ -112,7 +122,7 @@ class ModificadorController extends Controller
                 $modificadore->update([
                     'nombre' => $data['nombre'],
                     'tipo' => $data['tipo'],
-                    'requerido' => false,
+                    'requerido' => $data['requerido'] ?? false,
                     'activo' => $data['activo'],
                     'estacion_id' => $data['estacion_id'] ?? null,
                 ]);
@@ -124,7 +134,14 @@ class ModificadorController extends Controller
                     if (!empty($opcionData['id'])) {
                         // SI TIENE ID: Actualiza la opción existente
                         $opcionExistente = ModificadorOpcion::findOrFail($opcionData['id']);
+                        $stockAnterior = $opcionExistente->maneja_stock && $opcionExistente->stock !== null ? (int) $opcionExistente->stock : null;
                         $opcionExistente->update($opcionData);
+                        $stockFinal = $opcionExistente->maneja_stock && $opcionExistente->stock !== null ? (int) $opcionExistente->stock : null;
+                        if ($stockAnterior !== null && $stockFinal !== null && $stockAnterior !== $stockFinal) AjusteStock::create([
+                            'modificador_opcion_id' => $opcionExistente->id, 'tipo' => 'CORRECCION', 'cantidad' => $stockFinal,
+                            'stock_anterior' => $stockAnterior, 'stock_final' => $stockFinal,
+                            'motivo' => 'Corrección desde la edición del modificador', 'usuario_id' => auth('api')->id(),
+                        ]);
                         $opcionesIdsEnviadas[] = $opcionExistente->id;
                     } else {
                         // SI NO TIENE ID: Es una opción nueva añadida en Angular
@@ -171,5 +188,17 @@ class ModificadorController extends Controller
                 'details' => $e->getMessage()
             ], 500);
         }
+    }
+
+    private function normalizarStockOpciones(array $opciones): array
+    {
+        foreach ($opciones as &$opcion) {
+            $opcion['maneja_stock'] = (bool) ($opcion['maneja_stock'] ?? false);
+            if ($opcion['maneja_stock'] && !isset($opcion['stock'])) {
+                throw ValidationException::withMessages(['opciones' => 'Las opciones con control de stock necesitan un stock inicial.']);
+            }
+            if (!$opcion['maneja_stock']) $opcion['stock'] = $opcion['stock_minimo'] = null;
+        }
+        return $opciones;
     }
 }

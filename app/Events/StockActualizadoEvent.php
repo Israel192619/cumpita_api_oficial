@@ -13,9 +13,20 @@ class StockActualizadoEvent implements ShouldBroadcast, ShouldDispatchAfterCommi
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public function __construct(public int $productoId, public int $stock) {}
+    public function __construct(
+        public ?int $productoId,
+        public int $stock,
+        public ?int $modificadorOpcionId = null,
+    ) {}
 
     public function broadcastOn(): array { return [new Channel('canal-inventario')]; }
     public function broadcastAs(): string { return 'StockActualizado'; }
-    public function broadcastWith(): array { return ['producto_id' => $this->productoId, 'stock' => $this->stock]; }
+    public function broadcastWith(): array
+    {
+        return [
+            'producto_id' => $this->productoId,
+            'modificador_opcion_id' => $this->modificadorOpcionId,
+            'stock' => $this->stock,
+        ];
+    }
 }

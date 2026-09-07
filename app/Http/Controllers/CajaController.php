@@ -79,7 +79,7 @@ class CajaController extends Controller
                 'estado' => 'abierta',
                 'observacion_apertura' => $data['observacion_apertura'] ?? null,
             ]);
-            $caja->usuarios()->attach($usuarioId, ['asignado_por' => $usuarioId]);
+            $caja->invitaciones()->attach($usuarioId, ['asignado_por' => $usuarioId, 'estado' => 'aceptada', 'respondida_en' => now()]);
             event(new CajaActualizadaEvent($caja->id, 'abierta'));
 
             return response()->json([
@@ -175,25 +175,35 @@ class CajaController extends Controller
             ->where('estado', 'abierta')
             ->firstOrFail();
 
-        $usuarios = collect($data['usuarios'])
-            ->push((int) $caja->user_id)
-            ->unique()
-            ->values();
+        $usuarios = collect($data['usuarios'])->map(fn ($id) => (int) $id)->unique()->values();
+        $usuariosValidar = $usuarios->push((int) $caja->user_id)->unique()->values();
 
-        if ($this->usuariosElegibles()->whereIn('users.id', $usuarios)->count() !== $usuarios->count()) {
+        if ($this->usuariosElegibles()->whereIn('users.id', $usuariosValidar)->count() !== $usuariosValidar->count()) {
             return response()->json([
                 'message' => 'Solo puedes autorizar cajeros o administradores para esta caja.',
             ], 422);
         }
 
-        $caja->usuarios()->syncWithPivotValues(
-            $usuarios->all(),
-            ['asignado_por' => auth('api')->id()]
-        );
-        event(new CajaActualizadaEvent($caja->id, 'autorizaciones_actualizadas'));
+        DB::transaction(function () use ($caja, $usuarios) {
+            DB::table('caja_usuarios')->where('caja_id', $caja->id)
+                ->where('user_id', '!=', $caja->user_id)
+                ->whereNotIn('user_id', $usuarios->all())
+                ->whereIn('estado', ['pendiente', 'aceptada'])
+                ->update(['estado' => 'revocada', 'respondida_en' => now(), 'updated_at' => now()]);
+
+            foreach ($usuarios as $usuarioId) {
+                $actual = DB::table('caja_usuarios')->where('caja_id', $caja->id)->where('user_id', $usuarioId)->first();
+                if ($actual && in_array($actual->estado, ['pendiente', 'aceptada'], true)) continue;
+                DB::table('caja_usuarios')->updateOrInsert(
+                    ['caja_id' => $caja->id, 'user_id' => $usuarioId],
+                    ['asignado_por' => auth('api')->id(), 'estado' => 'pendiente', 'respondida_en' => null, 'created_at' => $actual?->created_at ?? now(), 'updated_at' => now()]
+                );
+            }
+        });
+        event(new CajaActualizadaEvent($caja->id, 'invitaciones_actualizadas'));
 
         return response()->json([
-            'message' => 'Cajeros autorizados actualizados.',
+            'message' => 'Solicitudes de caja compartida actualizadas.',
             'caja' => $caja->fresh()->load('usuarios:id,name,username'),
         ]);
     }
@@ -201,13 +211,60 @@ class CajaController extends Controller
     /** Lista ligera para asignar cajeros, disponible únicamente al responsable. */
     public function usuariosDisponibles(string $id)
     {
-        $this->cajaDelResponsable($id);
+        $caja = $this->cajaDelResponsable($id);
+        $estados = DB::table('caja_usuarios')->where('caja_id', $caja->id)->pluck('estado', 'user_id');
 
         return response()->json([
             'usuarios' => $this->usuariosElegibles()
                 ->where('users.id', '!=', auth('api')->id())
-                ->get(),
+                ->get()
+                ->each(fn ($usuario) => $usuario->setAttribute('estado_invitacion', $estados[$usuario->id] ?? null)),
         ]);
+    }
+
+    public function invitacionPendiente()
+    {
+        $usuarioId = auth('api')->id();
+        $caja = Caja::with('user:id,name,username')
+            ->where('estado', 'abierta')
+            ->whereHas('invitaciones', fn ($query) => $query->where('users.id', $usuarioId)->where('caja_usuarios.estado', 'pendiente'))
+            ->latest('fecha_apertura')->first();
+        return response()->json(['invitacion' => $caja]);
+    }
+
+    public function aceptarInvitacion(string $id)
+    {
+        return DB::transaction(function () use ($id) {
+            $usuarioId = auth('api')->id();
+            $caja = Caja::whereKey($id)->where('estado', 'abierta')->lockForUpdate()->firstOrFail();
+            $invitacion = DB::table('caja_usuarios')->where('caja_id', $caja->id)->where('user_id', $usuarioId)->where('estado', 'pendiente')->lockForUpdate()->first();
+            abort_unless($invitacion, 404, 'La solicitud ya no está disponible.');
+            $otraCaja = $this->cajasDisponibles()->where('estado', 'abierta')->whereKeyNot($caja->id)->exists();
+            abort_if($otraCaja, 422, 'Debes cerrar o abandonar tu caja actual antes de aceptar esta solicitud.');
+            DB::table('caja_usuarios')->where('id', $invitacion->id)->update(['estado' => 'aceptada', 'respondida_en' => now(), 'updated_at' => now()]);
+            event(new CajaActualizadaEvent($caja->id, 'invitacion_aceptada'));
+            return response()->json(['message' => 'Ahora trabajas con la caja compartida.', 'caja' => $caja->load('user:id,name,username')]);
+        });
+    }
+
+    public function rechazarInvitacion(string $id)
+    {
+        $actualizados = DB::table('caja_usuarios')->where('caja_id', $id)->where('user_id', auth('api')->id())->where('estado', 'pendiente')
+            ->update(['estado' => 'rechazada', 'respondida_en' => now(), 'updated_at' => now()]);
+        abort_unless($actualizados, 404, 'La solicitud ya no está disponible.');
+        event(new CajaActualizadaEvent((int) $id, 'invitacion_rechazada'));
+        return response()->json(['message' => 'Solicitud rechazada.']);
+    }
+
+    public function salir(string $id)
+    {
+        $caja = Caja::whereKey($id)->where('estado', 'abierta')->firstOrFail();
+        abort_if((int) $caja->user_id === (int) auth('api')->id(), 422, 'El responsable debe cerrar la caja.');
+        $actualizados = DB::table('caja_usuarios')->where('caja_id', $caja->id)->where('user_id', auth('api')->id())->where('estado', 'aceptada')
+            ->update(['estado' => 'salida', 'respondida_en' => now(), 'updated_at' => now()]);
+        abort_unless($actualizados, 404, 'No perteneces a esta caja compartida.');
+        event(new CajaActualizadaEvent($caja->id, 'cajero_salio'));
+        return response()->json(['message' => 'Dejaste la caja compartida.']);
     }
 
     private function cajaDelUsuario(string $id): Caja
@@ -250,7 +307,7 @@ class CajaController extends Controller
      */
     private function resumen(Caja $caja): array
     {
-        $totalEfectivo = round((float) $caja->pagos()->sum('monto_pagado'), 2);
+        $totalEfectivo = round((float) $caja->pagos()->where('metodo_pago', 'efectivo')->sum('monto_pagado'), 2);
         $ingresosMovimientos = round((float) $caja->movimientos()
             ->where('estado', 'ACTIVO')->where('tipo', 'INGRESO')->sum('monto'), 2);
         $retirosMovimientos = round((float) $caja->movimientos()

@@ -6,7 +6,9 @@ use App\Models\Categoria;
 use App\Models\AjusteStock;
 use App\Events\StockActualizadoEvent;
 use App\Models\ReservaStock;
+use App\Models\ReservaStockModificador;
 use App\Models\Producto;
+use App\Models\ProductoModificadorConfiguracion;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -20,7 +22,7 @@ class ProductoController extends Controller
     public function index(Request $request)
     {
         // OPTIMIZACIÓN: Añadimos 'opciones.modificador' al método 'with'
-        $query = Producto::with(['categoria', 'estacion', 'opciones.modificador']);
+        $query = Producto::with(['categoria', 'estacion', 'opciones.modificador', 'configuracionesModificador']);
 
         if ($request->filled('categoria_id')) {
             $categoriaId = $request->categoria_id;
@@ -52,10 +54,26 @@ class ProductoController extends Controller
         $reservas = ReservaStock::activas()->selectRaw('producto_id, SUM(cantidad) as cantidad')
             ->when($sesionId, fn ($query) => $query->where('sesion_id', '!=', $sesionId))
             ->groupBy('producto_id')->pluck('cantidad', 'producto_id');
-        $productos->each(function ($producto) use ($reservas) {
+        $opcionIds = $productos->flatMap(fn ($producto) => collect($producto->modificadores)
+            ->flatMap(fn ($grupo) => collect($grupo['opciones'] ?? [])->pluck('id')))->unique()->values();
+        $reservasOpciones = ReservaStockModificador::activas()
+            ->selectRaw('modificador_opcion_id, SUM(cantidad) as cantidad')
+            ->when($sesionId, fn ($query) => $query->where('sesion_id', '!=', $sesionId))
+            ->whereIn('modificador_opcion_id', $opcionIds)
+            ->groupBy('modificador_opcion_id')->pluck('cantidad', 'modificador_opcion_id');
+        $productos->each(function ($producto) use ($reservas, $reservasOpciones) {
             $producto->stock_disponible = $producto->maneja_stock && $producto->stock !== null
                 ? max(0, (int) $producto->stock - (int) ($reservas[$producto->id] ?? 0))
                 : null;
+            $producto->modificadores = collect($producto->modificadores)->map(function ($grupo) use ($reservasOpciones) {
+                $grupo['opciones'] = collect($grupo['opciones'] ?? [])->map(function ($opcion) use ($reservasOpciones) {
+                    if ($opcion['maneja_stock'] && $opcion['stock'] !== null) {
+                        $opcion['stock_disponible'] = max(0, (int) $opcion['stock'] - (int) ($reservasOpciones[$opcion['id']] ?? 0));
+                    }
+                    return $opcion;
+                })->values();
+                return $grupo;
+            })->values();
         });
 
         return response()->json([
@@ -105,6 +123,7 @@ class ProductoController extends Controller
                 }
                 $producto->opciones()->sync($opcionesSync);
             }
+            $this->sincronizarConfiguraciones($producto, $data['modificadores'] ?? []);
             return response()->json([
                 'producto' => $producto->load(['categoria', 'estacion']),
                 'message'  => 'Producto creado correctamente'
@@ -117,7 +136,21 @@ class ProductoController extends Controller
      */
     public function show(Producto $producto)
     {
+        $producto->load(['opciones.modificador', 'configuracionesModificador']);
         $producto->modificadores = $producto->modificadores_estructurados;
+        $reservasOpciones = ReservaStockModificador::activas()
+            ->whereIn('modificador_opcion_id', collect($producto->modificadores)->flatMap(fn ($grupo) => collect($grupo['opciones'] ?? [])->pluck('id')))
+            ->selectRaw('modificador_opcion_id, SUM(cantidad) as cantidad')
+            ->groupBy('modificador_opcion_id')->pluck('cantidad', 'modificador_opcion_id');
+        $producto->modificadores = collect($producto->modificadores)->map(function ($grupo) use ($reservasOpciones) {
+            $grupo['opciones'] = collect($grupo['opciones'] ?? [])->map(function ($opcion) use ($reservasOpciones) {
+                if ($opcion['maneja_stock'] && $opcion['stock'] !== null) {
+                    $opcion['stock_disponible'] = max(0, (int) $opcion['stock'] - (int) ($reservasOpciones[$opcion['id']] ?? 0));
+                }
+                return $opcion;
+            })->values();
+            return $grupo;
+        })->values();
 
         return response()->json([
             'producto' => $producto->load(['categoria', 'estacion'])
@@ -146,6 +179,11 @@ class ProductoController extends Controller
                     Storage::disk('public')->delete($producto->imagen);
                 }
                 $producto->imagen = $request->file('imagen')->store('productos', 'public');
+            } elseif ($request->boolean('eliminar_imagen')) {
+                if ($producto->imagen) {
+                    Storage::disk('public')->delete($producto->imagen);
+                }
+                $producto->imagen = null;
             }
 
             $producto->update([
@@ -176,19 +214,16 @@ class ProductoController extends Controller
             }
 
             // El método sync() limpia de forma atómica las opciones anteriores y asocia las nuevas
-            if (!empty($data['opciones'])) {
+            $opcionesSync = [];
+            foreach ($data['opciones'] ?? [] as $opcion) $opcionesSync[$opcion['id']] = ['predeterminado' => $opcion['predeterminado'] ?? false];
+            $producto->opciones()->sync($opcionesSync);
+            $this->sincronizarConfiguraciones($producto, $data['modificadores'] ?? []);
 
-                $opcionesSync = [];
-
-                foreach ($data['opciones'] as $opcion) {
-                    $opcionesSync[$opcion['id']] = [
-                        'predeterminado' => $opcion['predeterminado'] ?? false
-                    ];
-                }
-
-                $producto->opciones()->sync($opcionesSync);
-            }
-
+            $snapshot = $producto->only(['id', 'nombre', 'precio', 'activo', 'estacion_id', 'categoria_id']);
+            DB::afterCommit(function () use ($snapshot) {
+                try { event(new \App\Events\ProductoActualizadoEvent($snapshot)); }
+                catch (\Throwable $e) { \Illuminate\Support\Facades\Log::warning('No se pudo notificar el cambio del producto.', ['producto_id' => $snapshot['id'], 'error' => $e->getMessage()]); }
+            });
             return response()->json([
                 'message' => 'Producto actualizado correctamente',
                 'producto' => $producto->load(['categoria', 'estacion'])
@@ -265,10 +300,26 @@ class ProductoController extends Controller
             'stock'  => 'required_if:maneja_stock,true|nullable|integer|min:0',
             'stock_minimo' => 'required_if:maneja_stock,true|nullable|integer|min:0',
             'imagen' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:2048',
+            'eliminar_imagen' => 'sometimes|boolean',
             'opciones' => 'nullable|array',
             'opciones.*.id' => 'required|exists:modificador_opciones,id',
             'opciones.*.predeterminado' => 'required|boolean',
+            'modificadores' => 'nullable|array',
+            'modificadores.*.id' => 'required|exists:modificadores,id',
+            'modificadores.*.cantidad_requerida' => 'nullable|integer|min:1|max:20',
         ]);
+    }
+
+    private function sincronizarConfiguraciones(Producto $producto, array $configuraciones): void
+    {
+        $producto->configuracionesModificador()->delete();
+        foreach ($configuraciones as $configuracion) {
+            ProductoModificadorConfiguracion::create([
+                'producto_id' => $producto->id,
+                'modificador_id' => $configuracion['id'],
+                'cantidad_requerida' => $configuracion['cantidad_requerida'] ?? null,
+            ]);
+        }
     }
 
 }

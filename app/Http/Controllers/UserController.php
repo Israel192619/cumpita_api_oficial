@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\Role;
+use App\Models\EstacionTrabajo;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -50,6 +51,7 @@ class UserController extends Controller
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
+        $estacionId = $this->estacionParaRol((int) $request->role_id, $request->input('estacion_id'));
         
         DB::beginTransaction();
         
@@ -62,7 +64,7 @@ class UserController extends Controller
                 'password' => Hash::make($request->password),
                 'pin' => $esMesero && $request->filled('pin') ? Hash::make($request->pin) : null,
                 'role_id' => $request->role_id,
-                'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : null,
+                'estacion_id' => $estacionId,
             ];
             if ($request->filled('username')) {
                 $datosUsuario['username'] = Str::lower(trim($request->username));
@@ -131,12 +133,14 @@ class UserController extends Controller
             'direccion' => 'required|string|max:255',
             'numero_celular' => 'required|string|max:20',
 
-            'avatar' => 'nullable|image|mimes:jpg,jpeg,png|max:2048'
+            'avatar' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+            'remove_avatar' => 'nullable|boolean',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
         }
+        $estacionId = $this->estacionParaRol((int) $request->role_id, $request->input('estacion_id'));
 
         DB::beginTransaction();
 
@@ -149,7 +153,7 @@ class UserController extends Controller
                 'name' => $request->name,
                 'email' => $request->email,
                 'role_id' => $request->role_id,
-                'estacion_id' => $request->has('estacion_id') ? ($request->estacion_id ?: null) : $user->estacion_id,
+                'estacion_id' => $estacionId,
             ];
             if ($request->filled('username')) {
                 $datosUsuario['username'] = Str::lower(trim($request->username));
@@ -168,7 +172,12 @@ class UserController extends Controller
                 $user->update(['pin' => Hash::make($request->pin)]);
             }
             $profile = $user->perfilUsuarios;
-            if ($request->hasFile('avatar')) {
+            if ($request->boolean('remove_avatar')) {
+                if ($profile && $profile->avatar) {
+                    Storage::disk('public')->delete($profile->avatar);
+                }
+                $avatarPath = null;
+            } elseif ($request->hasFile('avatar')) {
 
                 if ($profile && $profile->avatar) {
                     Storage::disk('public')->delete($profile->avatar);
@@ -202,6 +211,27 @@ class UserController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    private function estacionParaRol(int $roleId, mixed $estacionSolicitada): ?int
+    {
+        $rol = Str::lower((string) Role::whereKey($roleId)->value('nombre'));
+
+        if ($rol === 'mesero') {
+            $estacionId = EstacionTrabajo::where('codigo', 'MESEROS')->where('activa', true)->value('id');
+            abort_unless($estacionId, 422, 'La estación Meseros no está disponible.');
+            return (int) $estacionId;
+        }
+
+        if ($rol === 'cocinero') {
+            $estacionId = $estacionSolicitada ? (int) $estacionSolicitada : null;
+            $valida = $estacionId && EstacionTrabajo::whereKey($estacionId)
+                ->where('activa', true)->whereIn('codigo', ['COCINA', 'PARRILLA'])->exists();
+            abort_unless($valida, 422, 'Selecciona una estación válida para el cocinero (Cocina o Parrilla).');
+            return $estacionId;
+        }
+
+        return null;
     }
 
     /**
