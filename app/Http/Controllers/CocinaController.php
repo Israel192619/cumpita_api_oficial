@@ -36,10 +36,10 @@ class CocinaController extends Controller
         $preordenesTempranas = collect();
         if ($estacion->codigo === 'PARRILLA' && $fecha === $inicioVentana->toDateString()) {
             $preordenesTempranas = Orden::with([
-                'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria',
+                'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
                 'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
-            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
                 // Si Caja aún no la activó y la hora ya pasó, Parrilla debe
                 // seguir viéndola: es una preorden atrasada, no una que deba
@@ -50,7 +50,7 @@ class CocinaController extends Controller
         }
 
         $ordenes = Orden::with([
-            'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria',
+            'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
             'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
         ])->operativas()->deFechaOperativa($fecha)
@@ -108,9 +108,9 @@ class CocinaController extends Controller
         // ficha, evitando que el operador pierda de vista el resto del pedido.
 
         $preordenes = Orden::with([
-            'cliente:id,nombre', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
+            'cliente', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
-        ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+        ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
             ->whereDate('fecha_programada', $fecha)
             ->whereNotIn('id', $preordenesTempranas->pluck('id'))
             ->orderBy('fecha_programada')->get()
@@ -135,11 +135,7 @@ class CocinaController extends Controller
 
         $detalle->loadMissing('orden');
         if ($detalle->orden?->esPreordenProgramada()) {
-            abort_unless(
-                $this->puedePrepararPreordenAnticipada($detalle->orden, $estacion),
-                422,
-                'La preorden solo puede prepararse en Parrilla durante los últimos 30 minutos.'
-            );
+            abort(422, 'La preorden aún no está activa. Debe activarla un mesero o cajero antes de cambiar su estado.');
         }
 
         $resultado = DB::transaction(function () use ($detalle, $data, $estacion, $kds) {
@@ -208,11 +204,7 @@ class CocinaController extends Controller
 
             foreach ($detalles as $detalle) {
                 if ($detalle->orden?->esPreordenProgramada()) {
-                    abort_unless(
-                        $this->puedePrepararPreordenAnticipada($detalle->orden, $estacion),
-                        422,
-                        'La preorden solo puede prepararse en Parrilla durante los últimos 30 minutos.'
-                    );
+                    abort(422, 'La preorden aún no está activa. Debe activarla un mesero o cajero antes de cambiar su estado.');
                 }
 
                 $kds->sincronizarDetalle($detalle);
@@ -290,7 +282,7 @@ class CocinaController extends Controller
         }
 
         return response()->json([
-            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
                 ->where('fecha_programada', '<=', now()->addMinutes(30))
                 ->orderBy('fecha_programada')->pluck('id')->map(fn ($id) => (int) $id)->all(),

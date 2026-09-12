@@ -24,10 +24,18 @@ return new class extends Migration
         });
 
         // Conserva la trazabilidad de los cobros históricos con el responsable de su caja.
-        DB::table('pagos_ordenes')
-            ->join('cajas', 'cajas.id', '=', 'pagos_ordenes.caja_id')
-            ->whereNull('pagos_ordenes.user_id')
-            ->update(['pagos_ordenes.user_id' => DB::raw('cajas.user_id')]);
+        if (DB::getDriverName() === 'sqlite') {
+            DB::table('pagos_ordenes')
+                ->whereNull('user_id')
+                ->update([
+                    'user_id' => DB::raw('(select cajas.user_id from cajas where cajas.id = pagos_ordenes.caja_id)'),
+                ]);
+        } else {
+            DB::table('pagos_ordenes')
+                ->join('cajas', 'cajas.id', '=', 'pagos_ordenes.caja_id')
+                ->whereNull('pagos_ordenes.user_id')
+                ->update(['pagos_ordenes.user_id' => DB::raw('cajas.user_id')]);
+        }
 
         DB::table('cajas')->whereNotNull('user_id')->orderBy('id')->each(function ($caja) {
             DB::table('caja_usuarios')->updateOrInsert(

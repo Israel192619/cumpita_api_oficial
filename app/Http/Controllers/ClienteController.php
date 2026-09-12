@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Cliente;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class ClienteController extends Controller
 {
@@ -49,7 +50,16 @@ class ClienteController extends Controller
         $validatedData = $request->validate([
             'nombre' => 'required|string|max:255',
             'telefono' => 'nullable|string|max:20',
+            'direccion' => 'nullable|string|max:255',
+            'referencia_ubicacion' => 'nullable|string|max:255',
+            'latitud' => 'nullable|numeric|between:-90,90',
+            'longitud' => 'nullable|numeric|between:-180,180',
+            'foto_local' => 'nullable|image|max:5120',
         ]);
+
+        if ($request->hasFile('foto_local')) {
+            $validatedData['foto_local'] = $request->file('foto_local')->store('clientes/locales', 'public');
+        }
 
         $cliente = Cliente::create($validatedData);
 
@@ -80,7 +90,17 @@ class ClienteController extends Controller
         $validatedData = $request->validate([
             'nombre' => 'required|string|max:255',
             'telefono' => 'nullable|string|max:20',
+            'direccion' => 'nullable|string|max:255',
+            'referencia_ubicacion' => 'nullable|string|max:255',
+            'latitud' => 'nullable|numeric|between:-90,90',
+            'longitud' => 'nullable|numeric|between:-180,180',
+            'foto_local' => 'nullable|image|max:5120',
         ]);
+
+        if ($request->hasFile('foto_local')) {
+            if ($cliente->foto_local) Storage::disk('public')->delete($cliente->foto_local);
+            $validatedData['foto_local'] = $request->file('foto_local')->store('clientes/locales', 'public');
+        }
 
         $cliente->update($validatedData);
 
@@ -96,6 +116,7 @@ class ClienteController extends Controller
     public function destroy(string $id)
     {
         $cliente = Cliente::findOrFail($id);
+        if ($cliente->foto_local) Storage::disk('public')->delete($cliente->foto_local);
         $cliente->delete();
 
         return response()->json([

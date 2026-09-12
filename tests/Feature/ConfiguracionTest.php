@@ -2,11 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Events\ConfiguracionActualizada;
+use App\Http\Middleware\JwtMiddleware;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\ConfiguracionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Tests\TestCase;
 
 class ConfiguracionTest extends TestCase
@@ -17,21 +20,38 @@ class ConfiguracionTest extends TestCase
         // Este módulo solo necesita su tabla; no depende de migraciones de caja.
         $migration = require database_path('migrations/2026_09_05_000001_create_configuraciones_table.php');
         $migration->up();
+        $ubicacionMigration = require database_path('migrations/2026_09_11_000002_create_ubicacion_restaurante_table.php');
+        $ubicacionMigration->up();
+    }
+
+    public function test_admin_can_save_restaurant_location_and_cashier_can_read_it(): void
+    {
+        Event::fake([ConfiguracionActualizada::class]);
+        $this->withoutMiddleware(JwtMiddleware::class);
+        $admin = (new User)->setRelation('role', new Role(['nombre' => 'Admin']));
+        $cashier = (new User)->setRelation('role', new Role(['nombre' => 'Cajero']));
+
+        $this->actingAs($admin, 'api')->putJson('/api/configuracion', [
+            'restaurante' => ['latitud' => -17.3935, 'longitud' => -66.1570],
+        ])->assertOk()->assertJsonPath('restaurante.latitud', -17.3935);
+
+        $this->actingAs($cashier, 'api')->getJson('/api/configuracion')
+            ->assertOk()->assertJsonPath('restaurante.longitud', -66.157);
     }
 
     public function test_admin_can_save_and_cashier_can_only_read_settings(): void
     {
-        \Illuminate\Support\Facades\Event::fake([\App\Events\ConfiguracionActualizada::class]);
-        $this->withoutMiddleware(\App\Http\Middleware\JwtMiddleware::class);
-        $admin = (new User())->setRelation('role', new Role(['nombre' => 'Admin']));
-        $cashier = (new User())->setRelation('role', new Role(['nombre' => 'Cajero']));
+        Event::fake([ConfiguracionActualizada::class]);
+        $this->withoutMiddleware(JwtMiddleware::class);
+        $admin = (new User)->setRelation('role', new Role(['nombre' => 'Admin']));
+        $cashier = (new User)->setRelation('role', new Role(['nombre' => 'Cajero']));
         $this->actingAs($admin, 'api')->putJson('/api/configuracion', ['pos' => ['editar_fecha_trabajo' => false]])
             ->assertOk()->assertJsonPath('pos.editar_fecha_trabajo', false);
-        \Illuminate\Support\Facades\Event::assertDispatchedTimes(\App\Events\ConfiguracionActualizada::class, 1);
+        Event::assertDispatchedTimes(ConfiguracionActualizada::class, 1);
         $this->actingAs($cashier, 'api')->getJson('/api/configuracion')
             ->assertOk()->assertJsonPath('pos.editar_fecha_trabajo', false);
         $this->actingAs($cashier, 'api')->putJson('/api/configuracion', ['pos' => ['editar_fecha_trabajo' => true]])->assertForbidden();
-        \Illuminate\Support\Facades\Event::assertDispatchedTimes(\App\Events\ConfiguracionActualizada::class, 1);
+        Event::assertDispatchedTimes(ConfiguracionActualizada::class, 1);
     }
 
     public function test_disabled_setting_replaces_new_work_date_and_ignores_edits_without_changing_preorder(): void

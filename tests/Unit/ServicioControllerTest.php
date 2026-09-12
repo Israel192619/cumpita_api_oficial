@@ -38,6 +38,13 @@ class ServicioControllerTest extends TestCase
             $table->string('email')->unique(); $table->string('password'); $table->string('pin')->nullable();
             $table->rememberToken(); $table->timestamps();
         });
+        Schema::create('estaciones_trabajo', function (Blueprint $table) {
+            $table->id(); $table->string('nombre'); $table->string('codigo');
+            $table->boolean('activa')->default(true); $table->integer('orden')->default(1);
+        });
+        \DB::table('estaciones_trabajo')->insert([
+            'id' => 4, 'nombre' => 'Meseros', 'codigo' => 'MESEROS', 'activa' => true, 'orden' => 4,
+        ]);
         Schema::create('perfil_usuarios', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('user_id'); $table->string('direccion')->nullable();
             $table->string('numero_celular')->nullable(); $table->string('avatar')->nullable(); $table->timestamps();
@@ -46,6 +53,9 @@ class ServicioControllerTest extends TestCase
             $table->id(); $table->unsignedBigInteger('user_id')->nullable(); $table->unsignedBigInteger('mesero_id')->nullable();
             $table->unsignedInteger('numero_orden'); $table->string('estado')->default('pendiente');
             $table->string('tipo_flujo')->default('normal'); $table->string('estado_preorden')->nullable();
+            $table->string('estado_solicitud')->nullable();
+            $table->timestamp('fecha_orden')->nullable(); $table->timestamp('fecha_programada')->nullable();
+            $table->timestamp('preorden_activada_en')->nullable();
             $table->timestamp('tomada_en')->nullable(); $table->timestamp('entregada_en')->nullable(); $table->timestamps();
         });
         Schema::create('productos', function (Blueprint $table) {
@@ -89,7 +99,7 @@ class ServicioControllerTest extends TestCase
     protected function tearDown(): void
     {
         foreach (['historial_cambios_orden', 'orden_detalle_estaciones', 'orden_detalle_opciones', 'orden_detalles', 'modificador_opciones',
-            'modificadores', 'productos', 'ordenes', 'perfil_usuarios', 'users', 'roles'] as $table) {
+            'modificadores', 'productos', 'ordenes', 'perfil_usuarios', 'users', 'estaciones_trabajo', 'roles'] as $table) {
             Schema::dropIfExists($table);
         }
         parent::tearDown();
@@ -126,7 +136,7 @@ class ServicioControllerTest extends TestCase
 
         $controller = new ServicioController();
         $this->assertSame(200, $controller->tomar($orden)->status());
-        $tablero = $controller->index(app(KdsEstacionService::class))->getData(true);
+        $tablero = $controller->index(Request::create('/', 'GET'), app(KdsEstacionService::class))->getData(true);
 
         $this->assertCount(1, $tablero['mis_fichas']);
         $this->assertSame($mesero->id, $orden->fresh()->mesero_id);
@@ -145,7 +155,7 @@ class ServicioControllerTest extends TestCase
         auth('api')->setUser($despacho);
         $controller = new ServicioController();
 
-        $this->assertSame(200, $controller->index(app(KdsEstacionService::class))->status());
+        $this->assertSame(200, $controller->index(Request::create('/', 'GET'), app(KdsEstacionService::class))->status());
         try {
             $controller->tomar($orden);
             $this->fail('Despacho no debe actuar como mesero.');
@@ -159,17 +169,18 @@ class ServicioControllerTest extends TestCase
         [$mesero] = $this->meseros();
         $programada = Orden::create([
             'user_id' => $mesero->id, 'numero_orden' => 142, 'estado' => 'pendiente',
-            'tipo_flujo' => 'preorden', 'estado_preorden' => 'programada',
+            'tipo_flujo' => 'preorden', 'estado_preorden' => 'programada', 'fecha_programada' => now(),
         ]);
         $activada = Orden::create([
             'user_id' => $mesero->id, 'numero_orden' => 143, 'estado' => 'pendiente',
             'tipo_flujo' => 'preorden', 'estado_preorden' => 'activada',
+            'fecha_orden' => now(), 'preorden_activada_en' => now(),
         ]);
         $token = JWTAuth::fromUser($mesero);
         JWTAuth::setToken($token)->authenticate();
         auth('api')->setUser($mesero);
 
-        $tablero = (new ServicioController())->index(app(KdsEstacionService::class))->getData(true);
+        $tablero = (new ServicioController())->index(Request::create('/', 'GET'), app(KdsEstacionService::class))->getData(true);
 
         $this->assertSame([$activada->id], collect($tablero['disponibles'])->pluck('id')->all());
         $this->assertNotContains($programada->id, collect($tablero['disponibles'])->pluck('id')->all());
@@ -424,11 +435,6 @@ class ServicioControllerTest extends TestCase
 
     public function test_colaboracion_tablero_incluye_fichas_ajenas_y_categoria_padre(): void
     {
-        Schema::table('ordenes', function (Blueprint $table) {
-            $table->timestamp('fecha_orden')->nullable();
-            $table->timestamp('preorden_activada_en')->nullable();
-            $table->timestamp('fecha_programada')->nullable();
-        });
         Schema::table('productos', fn (Blueprint $table) => $table->unsignedBigInteger('categoria_id')->nullable());
         Schema::create('categorias', function (Blueprint $table) {
             $table->id(); $table->string('nombre'); $table->unsignedBigInteger('parent_id')->nullable(); $table->timestamps();
@@ -501,9 +507,6 @@ class ServicioControllerTest extends TestCase
         Schema::table('productos', function (Blueprint $table) {
             $table->decimal('precio')->default(0); $table->boolean('activo')->default(true);
         });
-        Schema::create('estaciones_trabajo', function (Blueprint $table) {
-            $table->id(); $table->string('nombre'); $table->boolean('activa')->default(true);
-        });
         Schema::create('producto_opciones', function (Blueprint $table) {
             $table->unsignedBigInteger('producto_id'); $table->unsignedBigInteger('modificador_opcion_id');
             $table->boolean('predeterminado')->default(false);
@@ -531,7 +534,6 @@ class ServicioControllerTest extends TestCase
         } finally {
             Schema::dropIfExists('producto_modificador_configuraciones');
             Schema::dropIfExists('producto_opciones');
-            Schema::dropIfExists('estaciones_trabajo');
         }
     }
 

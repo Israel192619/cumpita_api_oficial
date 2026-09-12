@@ -32,6 +32,7 @@ class OrdenController extends Controller
     public function index(Request $request)
     {
         $query = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
+            ->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhereIn('estado_solicitud', ['aceptada', 'rechazada']))
             ->withMax('cambiosMesero as ultimo_cambio_mesero_en', 'created_at')
             ->when($request->filled('tipo_flujo'), fn ($query) => $query->where('tipo_flujo', $request->input('tipo_flujo')))
             ->when($request->filled('estado_preorden'), fn ($query) => $query->where('estado_preorden', $request->input('estado_preorden')));
@@ -172,12 +173,7 @@ class OrdenController extends Controller
                 ? Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_orden)
                 : now();
 
-            $ultimoNumero = Orden::whereDate(
-                'fecha_orden',
-                $fechaOrden->toDateString()
-            )->max('numero_orden');
-
-            $numeroOrden = ($ultimoNumero ?? 0) + 1;
+            $numeroOrden = Orden::siguienteNumeroParaFecha($fechaOrden->toDateString());
 
             // Crear la orden
             $orden = Orden::create([
@@ -342,9 +338,10 @@ class OrdenController extends Controller
             $historialIds = [];
             $ordenActualizada = DB::transaction(function () use ($request, $id, &$historialIds) {
                 $orden = Orden::lockForUpdate()->findOrFail($id);
+                $esSolicitudCliente = $orden->origen_registro === 'cliente' && in_array($orden->estado_solicitud, ['pendiente', 'vencida'], true);
                 abort_if((int) $orden->version !== (int) $request->expected_version, 409,
                     'Esta orden fue modificada por otro cajero. Actualízala antes de guardar para no perder cambios.');
-                abort_if($orden->estado === 'cancelado', 422,
+                abort_if($orden->estado === 'cancelado' && !$esSolicitudCliente, 422,
                     'Una orden cancelada no puede editarse. Crea una nueva orden si el cliente vuelve a pedir.');
                 $this->autorizarMeseroSobrePreorden($orden);
                 $usuarioId = auth('api')->id();
@@ -382,7 +379,7 @@ class OrdenController extends Controller
                     $updateData['fecha_orden'] = $request->filled('fecha_orden') ? $request->fecha_orden : null;
                 }
                 if ($request->has('tipo_flujo') || $request->has('fecha_programada')) {
-                    abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede modificarse.');
+                    abort_if($orden->estado_preorden === 'cancelada' && !$esSolicitudCliente, 422, 'Una preorden cancelada no puede modificarse.');
                     $tipoFlujo = $request->input('tipo_flujo', $request->filled('fecha_programada') ? 'preorden' : 'normal');
                     if ($orden->estado_preorden === 'activada' && $tipoFlujo !== 'preorden') {
                         abort(422, 'Una preorden activada no puede convertirse en pedido normal.');
@@ -427,13 +424,18 @@ class OrdenController extends Controller
                 }
 
                 if ($request->has('items')) {
-                    $huboUnidadesNuevas = $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds);
+                    if ($esSolicitudCliente) {
+                        ReservaStock::where('sesion_id', $orden->codigo_publico)->delete();
+                        ReservaStockModificador::where('sesion_id', $orden->codigo_publico)->delete();
+                    }
+                    $huboUnidadesNuevas = $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds, !$esSolicitudCliente);
                     if ($huboUnidadesNuevas && $orden->estado === 'listo') {
                         // Una unidad adicional vuelve a abrir trabajo sin tocar los estados
                         // de las unidades que Cocina/Parrilla ya finalizaron.
                         $orden->update(['estado' => 'preparando']);
                     }
                 }
+                if ($esSolicitudCliente) $this->reservarSolicitudClienteEditada($orden);
 
                 $pagosTotales = PagoOrden::where('id_orden', $orden->id)->sum('monto_pagado');
                 $orden->estado_pago = $pagosTotales <= 0
@@ -653,6 +655,7 @@ class OrdenController extends Controller
                     'detalles.estadosEstacion',
                 ])->lockForUpdate()->findOrFail($id);
                 abort_unless($orden->tipo_flujo === 'preorden', 422, 'La orden seleccionada no es una preorden.');
+                abort_if($orden->estado_solicitud === 'pendiente', 422, 'La solicitud debe ser aceptada antes de activar la preorden.');
                 abort_if($orden->estado_preorden === 'activada', 409, 'La preorden ya fue activada.');
                 abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede activarse.');
 
@@ -708,7 +711,7 @@ class OrdenController extends Controller
         }
     }
 
-    private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds): bool
+    private function sincronizarDetallesOrden(Orden $orden, array $items, ?int $usuarioId, array &$historialIds, bool $ajustarInventario = true): bool
     {
         // El POS puede enviar una línea con cantidad mayor a uno. Internamente cada unidad
         // debe conservar su propio detalle para que su producción y entrega sean independientes.
@@ -745,9 +748,11 @@ class OrdenController extends Controller
         // que el stock disponible no se valide dos veces durante una edición.
         $detallesExistentes
             ->filter(fn (OrdenDetalle $detalle) => !$idsSolicitados->contains((int) $detalle->id))
-            ->each(function (OrdenDetalle $detalle) use ($orden, $usuarioId, &$historialIds) {
-                $this->ajustarStock($detalle->producto, -(int) $detalle->cantidad);
-                $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
+            ->each(function (OrdenDetalle $detalle) use ($orden, $usuarioId, &$historialIds, $ajustarInventario) {
+                if ($ajustarInventario) {
+                    $this->ajustarStock($detalle->producto, -(int) $detalle->cantidad);
+                    $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
+                }
                 $this->registrarCambio(
                     $orden, $detalle, $detalle->producto, 'detalle_eliminado', (int) $detalle->cantidad,
                     null, $this->datosDetalle($detalle), null, $usuarioId, $historialIds,
@@ -784,7 +789,9 @@ class OrdenController extends Controller
                 $productoAnterior = $detalle->producto;
                 $datosAnterior = $this->datosDetalle($detalle);
 
-                if ($detalle->producto_id !== $productoNuevo->id) {
+                if (!$ajustarInventario) {
+                    // Las solicitudes todavía no descontaron existencias; se reservan al terminar la edición.
+                } elseif ($detalle->producto_id !== $productoNuevo->id) {
                     $this->ajustarStock($productoAnterior, -(int) $detalle->cantidad);
                     $this->ajustarStock($productoNuevo, $cantidadNueva);
                 } else {
@@ -816,8 +823,10 @@ class OrdenController extends Controller
 
                 $opcionesCambiaron = $this->opcionesCambian($detalle, $item['modificadores'] ?? []);
                 if ($opcionesCambiaron) {
-                    $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
-                    $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
+                    if ($ajustarInventario) {
+                        $this->ajustarStockOpcionesPorIds($detalle->opciones->pluck('modificador_opcion_id')->all(), -1);
+                        $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
+                    }
                     $detalle->opciones()->delete();
                     $this->crearOpcionesDetalle($detalle, $item['modificadores'] ?? []);
                 }
@@ -839,8 +848,10 @@ class OrdenController extends Controller
                 continue;
             }
 
-            $this->ajustarStock($productoNuevo, $cantidadNueva);
-            $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
+            if ($ajustarInventario) {
+                $this->ajustarStock($productoNuevo, $cantidadNueva);
+                $this->ajustarStockOpcionesPorIds(collect($item['modificadores'] ?? [])->pluck('modificador_opcion_id')->all(), 1);
+            }
             $detalle = OrdenDetalle::create([
                 'orden_id' => $orden->id,
                 'producto_id' => $productoNuevo->id,
@@ -1019,9 +1030,42 @@ class OrdenController extends Controller
         return mb_strtolower(auth('api')->user()?->role?->nombre ?? '') === 'mesero';
     }
 
+    private function reservarSolicitudClienteEditada(Orden $orden): void
+    {
+        $orden->load(['detalles.producto', 'detalles.opciones.modificadorOpcion']);
+        abort_if(!$orden->fecha_programada || $orden->fecha_programada->lt(now()->addMinutes(20)), 422,
+            'La hora solicitada debe quedar al menos 20 minutos después de la hora actual.');
+        $expira = now()->addMinutes(20);
+        foreach ($orden->detalles->groupBy('producto_id') as $productoId => $detalles) {
+            $producto = Producto::lockForUpdate()->findOrFail($productoId); $cantidad = (int) $detalles->sum('cantidad');
+            if ($producto->maneja_stock && $producto->stock !== null) {
+                $reservado = (int) ReservaStock::activas()->where('producto_id', $productoId)->sum('cantidad');
+                $disponible = max(0, (int) $producto->stock - $reservado);
+                abort_if($cantidad > $disponible, 422, "Stock insuficiente de {$producto->nombre}: hay {$disponible} y la solicitud necesita {$cantidad}.");
+                ReservaStock::create(['producto_id' => $productoId, 'usuario_id' => null, 'sesion_id' => $orden->codigo_publico, 'cantidad' => $cantidad, 'expira_en' => $expira]);
+            }
+        }
+        $usos = [];
+        foreach ($orden->detalles as $detalle) foreach ($detalle->opciones as $opcion) {
+            $id = (int) $opcion->modificador_opcion_id;
+            $usos[$id] = ($usos[$id] ?? 0) + (int) $detalle->cantidad;
+        }
+        foreach ($usos as $opcionId => $cantidad) {
+            $opcion = ModificadorOpcion::lockForUpdate()->findOrFail($opcionId);
+            if ($opcion->maneja_stock && $opcion->stock !== null) {
+                $reservado = (int) ReservaStockModificador::activas()->where('modificador_opcion_id', $opcionId)->sum('cantidad');
+                $disponible = max(0, (int) $opcion->stock - $reservado);
+                abort_if($cantidad > $disponible, 422, "Stock insuficiente de {$opcion->nombre}: hay {$disponible} y la solicitud necesita {$cantidad}.");
+                ReservaStockModificador::create(['modificador_opcion_id' => $opcionId, 'usuario_id' => null, 'sesion_id' => $orden->codigo_publico, 'cantidad' => $cantidad, 'expira_en' => $expira]);
+            }
+        }
+        $orden->update(['user_id' => auth('api')->id(), 'estado_solicitud' => 'pendiente', 'estado_preorden' => 'programada', 'estado' => 'pendiente', 'solicitud_expira_en' => $expira]);
+    }
+
     private function autorizarMeseroSobrePreorden(Orden $orden): void
     {
         if (!$this->esMesero()) return;
+        if ($orden->origen_registro === 'cliente' && in_array($orden->estado_solicitud, ['pendiente', 'vencida'], true)) return;
         abort_unless(
             $orden->tipo_flujo === 'preorden'
             && $orden->estado_preorden === 'programada'

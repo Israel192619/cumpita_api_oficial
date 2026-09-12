@@ -73,6 +73,7 @@ class OrdenControllerUpdateTest extends TestCase
         $token = JWTAuth::fromUser($user);
 
         $payload = [
+            'expected_version' => $orden->fresh()->version,
             'cliente_id' => $cliente->id,
             'mesa_id' => $mesa->id,
             'tipo_orden' => 'delivery',
@@ -136,6 +137,7 @@ class OrdenControllerUpdateTest extends TestCase
         $detalleListo->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
 
         $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
             'cliente_id' => $cliente->id, 'subtotal' => 80, 'total' => 80,
             'items' => [[
                 'orden_detalle_id' => $detalleListo->id,
@@ -159,6 +161,7 @@ class OrdenControllerUpdateTest extends TestCase
         Event::assertDispatched(OrdenCocinaActualizadaEvent::class, fn ($event) => $event->ordenId === $orden->id);
 
         $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
             'cliente_id' => $cliente->id, 'subtotal' => 80, 'total' => 80,
             'items' => $detalles->map(fn ($detalle) => ['orden_detalle_id' => $detalle->id,
                 'producto_id' => $producto->id, 'cantidad' => 1, 'precio_unitario' => 40, 'modificadores' => []])->all(),
@@ -170,6 +173,7 @@ class OrdenControllerUpdateTest extends TestCase
         $detalles[1]->update(['estado_cocina' => 'servido']);
         $detalles[1]->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
         $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
             'cliente_id' => $cliente->id, 'subtotal' => 200, 'total' => 200,
             'items' => [
                 ['orden_detalle_id' => $detalles[0]->id, 'producto_id' => $producto->id, 'cantidad' => 4, 'precio_unitario' => 40, 'modificadores' => []],

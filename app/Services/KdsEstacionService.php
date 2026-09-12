@@ -10,6 +10,11 @@ class KdsEstacionService
 {
     public function sincronizarDetalle(OrdenDetalle $detalle): void
     {
+        $detalle->loadMissing('orden');
+        if ($detalle->orden?->origen_registro === 'cliente' && $detalle->orden?->estado_solicitud !== 'aceptada') {
+            $detalle->estadosEstacion()->delete();
+            return;
+        }
         $detalle->loadMissing(['producto', 'opciones.modificadorOpcion.modificador']);
         $estaciones = collect([$detalle->estacion_id])
             ->merge($detalle->opciones->map(

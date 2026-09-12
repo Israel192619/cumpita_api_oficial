@@ -17,6 +17,10 @@ class KdsEstacionesPersistenciaTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Schema::create('ordenes', function (Blueprint $table) {
+            $table->id(); $table->unsignedInteger('numero_orden');
+            $table->string('estado')->default('pendiente'); $table->timestamps();
+        });
         Schema::create('productos', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('estacion_id')->nullable(); $table->string('nombre'); $table->timestamps();
         });
@@ -48,7 +52,7 @@ class KdsEstacionesPersistenciaTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach (['orden_detalle_estaciones', 'orden_detalle_opciones', 'orden_detalles', 'modificador_opciones', 'modificadores', 'productos'] as $table) {
+        foreach (['orden_detalle_estaciones', 'orden_detalle_opciones', 'orden_detalles', 'modificador_opciones', 'modificadores', 'productos', 'ordenes'] as $table) {
             Schema::dropIfExists($table);
         }
         parent::tearDown();
@@ -56,6 +60,7 @@ class KdsEstacionesPersistenciaTest extends TestCase
 
     public function test_dos_productos_con_modificadores_conservan_opciones_y_generan_trabajo_por_estacion(): void
     {
+        Orden::create(['id' => 1, 'numero_orden' => 1, 'estado' => 'pendiente']);
         $producto1 = \App\Models\Producto::create(['nombre' => 'Pescado', 'estacion_id' => 2]);
         $producto2 = \App\Models\Producto::create(['nombre' => 'Sopa', 'estacion_id' => 1]);
         $modCocina = Modificador::create(['nombre' => 'Guarnición', 'estacion_id' => 1, 'tipo' => 'multiple', 'requerido' => false, 'activo' => true]);
@@ -76,6 +81,7 @@ class KdsEstacionesPersistenciaTest extends TestCase
 
     public function test_cocina_desbloquea_solo_la_guarnicion_del_pescado_terminado(): void
     {
+        Orden::create(['id' => 125, 'numero_orden' => 125, 'estado' => 'preparando']);
         $pescado = \App\Models\Producto::create(['nombre' => 'Pescado', 'estacion_id' => 2]);
         $guarnicion = Modificador::create([
             'nombre' => 'Guarnición', 'estacion_id' => 1, 'tipo' => 'unico',

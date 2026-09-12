@@ -8,6 +8,7 @@ use App\Models\OrdenDetalleEstacion;
 use App\Models\PagoOrden;
 use App\Models\Producto;
 use App\Models\Caja;
+use App\Models\Categoria;
 use App\Models\GastoCaja;
 use App\Models\MovimientoCaja;
 use Carbon\Carbon;
@@ -25,6 +26,8 @@ class DashboardController extends Controller
         $data = $request->validate([
             'desde' => ['required', 'date_format:Y-m-d'],
             'hasta' => ['required', 'date_format:Y-m-d', 'after_or_equal:desde'],
+            'categoria_id' => ['nullable', 'integer', 'exists:categorias,id'],
+            'subcategoria_id' => ['nullable', 'integer', 'exists:categorias,id'],
         ]);
         $desde = Carbon::createFromFormat('Y-m-d', $data['desde'])->startOfDay();
         $hasta = Carbon::createFromFormat('Y-m-d', $data['hasta'])->endOfDay();
@@ -66,10 +69,23 @@ class DashboardController extends Controller
             ->where(fn (Builder $query) => $query->where('tipo_flujo', '!=', 'preorden')
                 ->orWhereNull('tipo_flujo')->orWhere('estado_preorden', 'activada'));
 
-        $masVendidos = OrdenDetalle::query()
+        $categoriaId = isset($data['categoria_id']) ? (int) $data['categoria_id'] : null;
+        $subcategoriaId = isset($data['subcategoria_id']) ? (int) $data['subcategoria_id'] : null;
+        $categoriaIds = null;
+        if ($subcategoriaId) {
+            $categoriaIds = [$subcategoriaId];
+        } elseif ($categoriaId) {
+            $categoriaIds = Categoria::query()->where('parent_id', $categoriaId)->pluck('id')->push($categoriaId);
+        }
+
+        $masVendidosQuery = OrdenDetalle::query()
             ->joinSub($ordenesPeriodo->select('ordenes.id'), 'ordenes_periodo', fn ($join) =>
                 $join->on('orden_detalles.orden_id', '=', 'ordenes_periodo.id'))
-            ->join('productos', 'productos.id', '=', 'orden_detalles.producto_id')
+            ->join('productos', 'productos.id', '=', 'orden_detalles.producto_id');
+        if ($categoriaIds !== null) {
+            $masVendidosQuery->whereIn('productos.categoria_id', $categoriaIds);
+        }
+        $masVendidos = $masVendidosQuery
             ->groupBy('productos.id', 'productos.nombre')
             ->orderByDesc(DB::raw('SUM(orden_detalles.cantidad)'))
             ->limit(5)
@@ -111,6 +127,7 @@ class DashboardController extends Controller
                 'servicio_pendientes' => (clone $ordenesOperativas)->count(),
                 'preordenes_programadas' => Orden::where('tipo_flujo', 'preorden')
                     ->where('estado_preorden', 'programada')
+                    ->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                     ->whereBetween('fecha_programada', [$desde, $hasta])->count(),
             ],
             'productos_por_agotar' => Producto::query()

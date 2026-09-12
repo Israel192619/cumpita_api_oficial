@@ -22,14 +22,16 @@ class DashboardControllerTest extends TestCase
     {
         $admin = User::factory()->create(['role_id' => Role::create(['nombre' => 'Administrador'])->id]);
         $categoria = Categoria::create(['nombre' => 'Platos']);
+        $subcategoria = Categoria::create(['nombre' => 'Pescados', 'parent_id' => $categoria->id]);
+        $otraCategoria = Categoria::create(['nombre' => 'Entradas']);
         $cocina = EstacionTrabajo::create(['nombre' => 'Cocina', 'codigo' => 'COCINA', 'activa' => true, 'orden' => 1]);
         $parrilla = EstacionTrabajo::create(['nombre' => 'Parrilla', 'codigo' => 'PARRILLA', 'activa' => true, 'orden' => 2]);
         $pescado = Producto::create([
-            'categoria_id' => $categoria->id, 'estacion_id' => $parrilla->id, 'nombre' => 'Pescado',
+            'categoria_id' => $subcategoria->id, 'estacion_id' => $parrilla->id, 'nombre' => 'Pescado',
             'precio' => 50, 'activo' => true, 'maneja_stock' => true, 'stock' => 2, 'stock_minimo' => 3,
         ]);
         $sopa = Producto::create([
-            'categoria_id' => $categoria->id, 'estacion_id' => $cocina->id, 'nombre' => 'Sopa',
+            'categoria_id' => $otraCategoria->id, 'estacion_id' => $cocina->id, 'nombre' => 'Sopa',
             'precio' => 20, 'activo' => true, 'maneja_stock' => false,
         ]);
         $orden = Orden::create([
@@ -49,7 +51,7 @@ class DashboardControllerTest extends TestCase
             'cambio_devuelto' => 0, 'metodo_pago' => 'qr', 'tipo_pago' => 'devolucion', 'fecha_pago' => now()]);
         Orden::create(['user_id' => $admin->id, 'numero_orden' => 11, 'subtotal' => 0, 'descuento' => 0,
             'total' => 0, 'estado' => 'pendiente', 'estado_pago' => 'pendiente', 'tipo_flujo' => 'preorden',
-            'estado_preorden' => 'programada', 'fecha_programada' => now()->addDay()]);
+            'estado_preorden' => 'programada', 'fecha_programada' => now()]);
 
         $fecha = now()->toDateString();
         $this->withToken(JWTAuth::fromUser($admin))->getJson("/api/dashboard?desde={$fecha}&hasta={$fecha}")
@@ -66,6 +68,16 @@ class DashboardControllerTest extends TestCase
             ->assertJsonPath('productos_por_agotar.0.nombre', 'Pescado')
             ->assertJsonPath('productos_mas_vendidos.0.nombre', 'Pescado')
             ->assertJsonPath('productos_mas_vendidos.0.cantidad', 2);
+
+        $token = JWTAuth::fromUser($admin);
+        $this->withToken($token)->getJson("/api/dashboard?desde={$fecha}&hasta={$fecha}&categoria_id={$categoria->id}")
+            ->assertOk()
+            ->assertJsonCount(1, 'productos_mas_vendidos')
+            ->assertJsonPath('productos_mas_vendidos.0.nombre', 'Pescado');
+        $this->withToken($token)->getJson("/api/dashboard?desde={$fecha}&hasta={$fecha}&subcategoria_id={$subcategoria->id}")
+            ->assertOk()
+            ->assertJsonCount(1, 'productos_mas_vendidos')
+            ->assertJsonPath('productos_mas_vendidos.0.nombre', 'Pescado');
     }
 
     public function test_dashboard_solo_admite_administracion_y_valida_periodo(): void

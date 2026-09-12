@@ -22,6 +22,7 @@ use App\Http\Controllers\RoleController;
 use App\Http\Controllers\ReservaStockController;
 use App\Http\Controllers\ReporteController;
 use App\Http\Controllers\ServicioController;
+use App\Http\Controllers\SolicitudPreordenController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -38,6 +39,13 @@ Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/olvide-mi-contrasena', [ReestablecerContrasenaController::class, 'olvideMiContrasena']);
 Route::post('/reestablecer-contrasena', [ReestablecerContrasenaController::class, 'reestablecerContrasena']);
+
+Route::prefix('publico')->middleware('throttle:120,1')->group(function () {
+    Route::get('catalogo-preorden', [SolicitudPreordenController::class, 'catalogo']);
+    Route::get('clientes/por-telefono', [SolicitudPreordenController::class, 'clientePorTelefono'])->middleware('throttle:60,1');
+    Route::post('solicitudes-preorden', [SolicitudPreordenController::class, 'store'])->middleware('throttle:6,1');
+    Route::get('solicitudes-preorden/{codigo}', [SolicitudPreordenController::class, 'show']);
+});
 
 Route::middleware('jwt')->group(function () {
     Route::get('configuracion', [\App\Http\Controllers\ConfiguracionController::class, 'show']);
@@ -66,6 +74,11 @@ Route::middleware('jwt')->group(function () {
     });
 
     Route::middleware('access:captura-preorden')->group(function () {
+        Route::get('solicitudes-preorden', [SolicitudPreordenController::class, 'index']);
+        Route::post('solicitudes-preorden/{orden}/aceptar', [SolicitudPreordenController::class, 'aceptar']);
+        Route::post('solicitudes-preorden/{orden}/rechazar', [SolicitudPreordenController::class, 'rechazar']);
+        Route::post('solicitudes-preorden/{orden}/reactivar', [SolicitudPreordenController::class, 'reactivar']);
+        Route::get('solicitudes-preorden/{orden}/disponibilidad', [SolicitudPreordenController::class, 'disponibilidad']);
         Route::get('categorias', [CategoriaController::class, 'index']);
         Route::get('categorias/{categoria}', [CategoriaController::class, 'show']);
         Route::get('productos', [ProductoController::class, 'index']);
@@ -136,5 +149,6 @@ Route::middleware('jwt')->group(function () {
         Route::post('servicio/detalles/{detalle}/colaborar', [ServicioController::class, 'colaborar']);
         Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);
         Route::post('servicio/fichas/{orden}/entregar', [ServicioController::class, 'entregar']);
+        Route::post('servicio/clientes/{cliente}/ubicacion', [ServicioController::class, 'actualizarUbicacionCliente']);
     });
 });

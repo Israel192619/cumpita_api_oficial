@@ -39,7 +39,7 @@ class OrdenAdicionalMeseroTest extends TestCase
 
         $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", [
             'producto_id' => $producto->id, 'cantidad' => 2, 'precio_unitario' => 1,
-            'subtotal' => 1, 'total' => 1, 'modificador_opcion_ids' => [],
+            'subtotal' => 1, 'total' => 1, 'modificador_opcion_ids' => [$opcion->id],
         ])->assertCreated()->assertJsonPath('orden.total', '100.00');
 
         $this->assertDatabaseCount('orden_detalles', 3);

@@ -2,11 +2,18 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ConfiguracionService
 {
+    public function ubicacionRestaurante(): ?array
+    {
+        $ubicacion = DB::table('ubicacion_restaurante')->where('id', 1)->first();
+
+        return $ubicacion ? ['latitud' => (float) $ubicacion->latitud, 'longitud' => (float) $ubicacion->longitud] : null;
+    }
+
     public function permiteFechaTrabajo(): bool
     {
         return (bool) (DB::table('configuraciones')->where('clave', 'pos.editar_fecha_trabajo')->value('valor') ?? true);
@@ -14,7 +21,9 @@ class ConfiguracionService
 
     public function aplicarFechaTrabajo(Request $request, bool $creando): void
     {
-        if ($this->permiteFechaTrabajo()) return;
+        if ($this->permiteFechaTrabajo()) {
+            return;
+        }
 
         if ($creando) {
             $request->merge(['fecha_orden' => now()->format('Y-m-d\TH:i:s')]);

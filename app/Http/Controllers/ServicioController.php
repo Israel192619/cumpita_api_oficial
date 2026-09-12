@@ -6,6 +6,7 @@ use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\ServicioSesionActualizadaEvent;
 use App\Events\ServicioFichaActualizadaEvent;
 use App\Models\HistorialCambioOrden;
+use App\Models\Cliente;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleEstacion;
@@ -14,6 +15,7 @@ use App\Services\ServicioColaboracionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class ServicioController extends Controller
@@ -31,7 +33,7 @@ class ServicioController extends Controller
             $this->asegurarMesero($usuario);
         }
         $base = Orden::with([
-            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+            'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
             'mesero:id,name',
         ])->operativas()->deFechaOperativa($fecha)
@@ -44,7 +46,7 @@ class ServicioController extends Controller
         $ordenes->load('detalles.estadosEstacion');
 
         $entregadas = Orden::with([
-                'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+                'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
                 'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
                 'mesero:id,name',
             ])->operativas()->deFechaOperativa($fecha)
@@ -52,9 +54,10 @@ class ServicioController extends Controller
                 ->latest('entregada_en')->get();
 
         $preordenes = Orden::with([
-            'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+            'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+            ->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
             ->whereDate('fecha_programada', now()->toDateString())
             ->orderBy('fecha_programada')->get();
 
@@ -228,6 +231,36 @@ class ServicioController extends Controller
         return response()->json(['message' => 'Pedido entregado.', 'orden_id' => $orden->id]);
     }
 
+    public function actualizarUbicacionCliente(Request $request, Cliente $cliente)
+    {
+        $this->meseroServicio();
+        $data = $request->validate([
+            'direccion' => ['nullable', 'string', 'max:255'],
+            'referencia_ubicacion' => ['nullable', 'string', 'max:255'],
+            'latitud' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitud' => ['nullable', 'numeric', 'between:-180,180'],
+            'foto_local' => ['nullable', 'image', 'max:5120'],
+            'eliminar_foto' => ['nullable', 'boolean'],
+        ]);
+        if ($request->boolean('eliminar_foto') && $cliente->foto_local) {
+            Storage::disk('public')->delete($cliente->foto_local);
+            $data['foto_local'] = null;
+        }
+        if ($request->hasFile('foto_local')) {
+            if ($cliente->foto_local) Storage::disk('public')->delete($cliente->foto_local);
+            $data['foto_local'] = $request->file('foto_local')->store('clientes/locales', 'public');
+        }
+        unset($data['eliminar_foto']);
+        $cliente->update($data);
+        return response()->json(['message' => 'Ubicación actualizada.', 'ubicacion_entrega' => [
+            'direccion' => $cliente->direccion,
+            'referencia' => $cliente->referencia_ubicacion,
+            'latitud' => $cliente->latitud,
+            'longitud' => $cliente->longitud,
+            'foto_local_url' => $cliente->foto_local_url,
+        ]]);
+    }
+
     private function ficha(Orden $orden): array
     {
         $detalles = $orden->detalles->map(function ($detalle) {
@@ -245,7 +278,8 @@ class ServicioController extends Controller
         return [
             'id' => $orden->id, 'numero_orden' => $orden->numero_orden, 'created_at' => $orden->created_at,
             'entregada_en' => $orden->entregada_en?->toIso8601String(),
-            'mesa' => $orden->mesa?->numero, 'cliente' => $orden->cliente?->nombre,
+            'mesa' => $orden->mesa?->numero, 'cliente' => $orden->cliente?->nombre, 'cliente_id' => $orden->cliente_id,
+            'ubicacion_entrega' => $this->ubicacionEntrega($orden),
             'tipo_orden' => $orden->tipo_orden,
             'tipo_flujo' => $orden->tipo_flujo,
             'estado_preorden' => $orden->estado_preorden,
@@ -265,6 +299,8 @@ class ServicioController extends Controller
             'numero_orden' => $orden->numero_orden,
             'mesa' => $orden->mesa?->numero,
             'cliente' => $orden->cliente?->nombre,
+            'cliente_id' => $orden->cliente_id,
+            'ubicacion_entrega' => $this->ubicacionEntrega($orden),
             'tipo_orden' => $orden->tipo_orden,
             'fecha_programada' => $orden->fecha_programada,
             'estado_preorden' => $orden->estado_preorden,
@@ -280,6 +316,18 @@ class ServicioController extends Controller
             ])->values(),
             'total_items' => $orden->detalles->count(),
             'bloqueada' => true,
+        ];
+    }
+
+    private function ubicacionEntrega(Orden $orden): ?array
+    {
+        if ($orden->tipo_orden !== 'delivery' || !$orden->cliente) return null;
+        return [
+            'direccion' => $orden->cliente->direccion,
+            'referencia' => $orden->cliente->referencia_ubicacion,
+            'latitud' => $orden->cliente->latitud,
+            'longitud' => $orden->cliente->longitud,
+            'foto_local_url' => $orden->cliente->foto_local_url,
         ];
     }
 
@@ -339,7 +387,7 @@ class ServicioController extends Controller
             $ficha = null;
             if ($accion === 'liberada') {
                 $orden->load([
-                    'mesa:id,numero', 'cliente:id,nombre', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
+                    'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
                     'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
                     'mesero:id,name',
                 ]);

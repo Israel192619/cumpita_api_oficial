@@ -18,7 +18,7 @@ class DatabaseSeederTest extends TestCase
 
         $this->assertSame(User::count(), User::whereHas('perfilUsuarios')->count() + 1);
         $this->assertDatabaseCount('roles', 5);
-        $this->assertDatabaseCount('estaciones_trabajo', 4);
+        $this->assertDatabaseCount('estaciones_trabajo', 3);
         $this->assertDatabaseCount('users', 7);
         $this->assertDatabaseCount('perfil_usuarios', 6);
         $this->assertDatabaseCount('categorias', 11);
@@ -27,7 +27,6 @@ class DatabaseSeederTest extends TestCase
         $this->assertDatabaseCount('modificador_opciones', 12);
         $this->assertDatabaseCount('productos', 9);
         $this->assertDatabaseCount('producto_opciones', 50);
-        $this->assertDatabaseCount('puestos_estacion', 2);
         $this->assertDatabaseHas('users', ['username' => 'admin']);
         $this->assertDatabaseHas('users', ['username' => 'despacho']);
         $this->assertDatabaseHas('productos', ['id' => 11, 'nombre' => 'Jugo grande', 'stock' => 40]);

@@ -6,6 +6,22 @@ use Illuminate\Database\Eloquent\Model;
 
 class Orden extends Model
 {
+    public static function siguienteNumeroParaFecha(string $fecha): int
+    {
+        $ultimo = static::query()
+            ->where(function ($query) use ($fecha) {
+                $query->whereDate('fecha_orden', $fecha)
+                    ->orWhere(function ($query) use ($fecha) {
+                        $query->whereNull('fecha_orden')->whereDate('created_at', $fecha);
+                    });
+            })
+            ->orderByDesc('numero_orden')
+            ->lockForUpdate()
+            ->value('numero_orden');
+
+        return (int) ($ultimo ?? 0) + 1;
+    }
+
     protected $table = 'ordenes'; 
     protected $fillable = [
         'user_id',
@@ -17,6 +33,13 @@ class Orden extends Model
         'fecha_orden',
         'fecha_programada',
         'tipo_flujo',
+        'origen_registro',
+        'estado_solicitud',
+        'codigo_publico',
+        'solicitud_revisada_por',
+        'solicitud_revisada_en',
+        'motivo_rechazo',
+        'solicitud_expira_en',
         'estado_preorden',
         'preorden_activada_en',
         'preorden_activada_por',
@@ -48,6 +71,8 @@ class Orden extends Model
         'tomada_en' => 'datetime',
         'entregada_en' => 'datetime',
         'version' => 'integer',
+        'solicitud_revisada_en' => 'datetime',
+        'solicitud_expira_en' => 'datetime',
     ];
 
     protected $appends = ['cliente_nombre', 'cliente_telefono', 'saldo_pendiente'];
@@ -75,9 +100,15 @@ class Orden extends Model
         return $this->belongsTo(User::class, 'preorden_cancelada_por');
     }
 
+    public function solicitudRevisadaPor()
+    {
+        return $this->belongsTo(User::class, 'solicitud_revisada_por');
+    }
+
     public function scopeOperativas($query)
     {
-        return $query->where(function ($query) {
+        return $query->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
+            ->where(function ($query) {
             $query->whereIn('tipo_flujo', ['normal'])
                 ->orWhereNull('tipo_flujo')
                 ->orWhere(function ($query) {
