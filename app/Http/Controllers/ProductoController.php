@@ -9,6 +9,7 @@ use App\Models\ReservaStock;
 use App\Models\ReservaStockModificador;
 use App\Models\Producto;
 use App\Models\ProductoModificadorConfiguracion;
+use App\Models\Modificador;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -307,6 +308,7 @@ class ProductoController extends Controller
             'modificadores' => 'nullable|array',
             'modificadores.*.id' => 'required|exists:modificadores,id',
             'modificadores.*.cantidad_requerida' => 'nullable|integer|min:1|max:20',
+            'modificadores.*.cantidad_es_maxima' => 'sometimes|boolean',
         ]);
     }
 
@@ -318,6 +320,8 @@ class ProductoController extends Controller
                 'producto_id' => $producto->id,
                 'modificador_id' => $configuracion['id'],
                 'cantidad_requerida' => $configuracion['cantidad_requerida'] ?? null,
+                'cantidad_es_maxima' => Modificador::find($configuracion['id'])?->usaLimiteMaximo()
+                    || (bool) ($configuracion['cantidad_es_maxima'] ?? false),
             ]);
         }
     }

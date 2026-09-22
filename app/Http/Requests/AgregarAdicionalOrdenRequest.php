@@ -15,6 +15,7 @@ class AgregarAdicionalOrdenRequest extends FormRequest
     {
         return [
             'producto_id' => ['required', 'integer', 'exists:productos,id'],
+            'reserva_sesion' => ['nullable', 'uuid'],
             'cantidad' => ['required', 'integer', 'min:1', 'max:20'],
             'nota' => ['nullable', 'string', 'max:255'],
             'modificador_opcion_ids' => ['nullable', 'array'],

@@ -23,6 +23,9 @@ class CocinaController extends Controller
         KdsEstacionService $kds,
     )
     {
+        $request->validate(['orden_ids' => ['sometimes', 'array', 'min:1', 'max:100'],
+            'orden_ids.*' => ['integer', 'min:1', 'distinct']]);
+        $ids = $request->has('orden_ids') ? array_map('intval', $request->input('orden_ids')) : null;
         $fecha = $request->input('fecha', now()->toDateString());
         $estacion = $this->resolverEstacion($request);
         // Los servidos siguen disponibles en una sección compacta del KDS:
@@ -35,10 +38,10 @@ class CocinaController extends Controller
         $finVentana = $inicioVentana->copy()->addMinutes(30);
         $preordenesTempranas = collect();
         if ($estacion->codigo === 'PARRILLA' && $fecha === $inicioVentana->toDateString()) {
-            $preordenesTempranas = Orden::with([
+            $preordenesTempranas = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
                 'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
-                'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
+                'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
             ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
                 // Si Caja aún no la activó y la hora ya pasó, Parrilla debe
@@ -49,10 +52,10 @@ class CocinaController extends Controller
 
         }
 
-        $ordenes = Orden::with([
+        $ordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
             'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
             'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
-            'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
+            'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
         ])->operativas()->deFechaOperativa($fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
             ->where(function ($query) use ($estacion, $activos) {
@@ -67,12 +70,11 @@ class CocinaController extends Controller
         // que se sincronizaran las opciones por estación. Sin esto, un pescado
         // con guarniciones de Cocina solo aparece después de que Parrilla lo
         // marca listo, aunque debería verse bloqueado desde la activación.
-        $ordenes->each(function (Orden $orden) use ($kds) {
-            $kds->sincronizar($orden->detalles);
-            $orden->detalles->each(fn (OrdenDetalle $detalle) =>
-                $detalle->load('estadosEstacion.estacion:id,nombre,codigo')
-            );
-        });
+        $kds->sincronizar($ordenes->pluck('detalles')->flatten());
+        // Recargar solo los estados sobre los detalles existentes. Recargar
+        // detalles desde ordenes descarta producto, categoria y opciones.
+        $detalles = new \Illuminate\Database\Eloquent\Collection($ordenes->pluck('detalles')->flatten()->all());
+        $detalles->load('estadosEstacion.estacion:id,nombre,codigo');
 
         $ordenes = $ordenes
             ->map(fn (Orden $orden) => $this->proyectarOrden($orden, $estacion->id, $activos))
@@ -107,9 +109,9 @@ class CocinaController extends Controller
         // productos. Solo cambia el estado del producto dentro de la misma
         // ficha, evitando que el operador pierda de vista el resto del pedido.
 
-        $preordenes = Orden::with([
+        $preordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
             'cliente', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
-            'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id',
+            'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
             ->whereDate('fecha_programada', $fecha)
             ->whereNotIn('id', $preordenesTempranas->pluck('id'))
@@ -118,6 +120,8 @@ class CocinaController extends Controller
             ->filter(fn (array $orden) => count($orden['detalles']) > 0)->values();
 
         return response()->json([
+            'orden_ids' => $ids,
+            'asignaciones' => (object) $porOrden,
             'ordenes' => $ordenes,
             'preordenes_programadas' => $preordenes,
             'estacion' => $estacion->only(['id', 'nombre', 'codigo']),
@@ -183,7 +187,11 @@ class CocinaController extends Controller
 
         $asignaciones->sincronizarAsignaciones($estacion->id);
 
-        event(new OrdenCocinaActualizadaEvent($resultado['orden'], [], 'kds'));
+        event(new OrdenCocinaActualizadaEvent($resultado['orden'], [], 'kds', [[
+            'id' => (int) $resultado['detalle']->id,
+            'listo' => $resultado['detalle']->estado_cocina === 'servido',
+            'servido' => $resultado['detalle']->estado_cocina === 'servido',
+        ]]));
         unset($resultado['orden']);
         return response()->json($resultado);
     }
@@ -245,12 +253,17 @@ class CocinaController extends Controller
 
             return [
                 'detalle_ids' => $detalles->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
+                'estados_detalles' => $detalles->groupBy('orden_id')->map(fn ($items) => $items->map(fn ($detalle) => [
+                    'id' => (int) $detalle->id,
+                    'listo' => $detalle->estado_cocina === 'servido',
+                    'servido' => $detalle->estado_cocina === 'servido',
+                ])->values()->all()),
                 'ordenes' => $ordenes->map(fn ($orden) => $orden->fresh())->values(),
             ];
         });
 
         $asignaciones->sincronizarAsignaciones($estacion->id);
-        foreach ($resultado['ordenes'] as $orden) event(new OrdenCocinaActualizadaEvent($orden, [], 'kds'));
+        foreach ($resultado['ordenes'] as $orden) event(new OrdenCocinaActualizadaEvent($orden, [], 'kds', $resultado['estados_detalles']->get($orden->id, [])));
 
         return response()->json([
             'detalle_ids' => $resultado['detalle_ids'],

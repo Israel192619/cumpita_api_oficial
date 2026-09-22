@@ -21,7 +21,7 @@ class PerfilUsuario extends Model
     public function getAvatarUrlAttribute()
     {
         return $this->avatar
-            ? asset('storage/' . $this->avatar)
+            ? '/storage/' . ltrim($this->avatar, '/')
             : null;
     }
 

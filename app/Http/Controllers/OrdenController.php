@@ -161,11 +161,7 @@ class OrdenController extends Controller
                 $clienteId = $request->cliente_id;
             }
             elseif ($request->cliente_nombre) {
-                $cliente = Cliente::firstOrCreate(
-                    ['nombre' => $request->cliente_nombre],
-                    ['telefono' => $request->cliente_telefono]
-                );
-                $clienteId = $cliente->id;
+                $clienteId = $this->resolverClientePorNombre($request->cliente_nombre, $request->cliente_telefono);
             }
 
             $tipoFlujo = $request->input('tipo_flujo', $request->filled('fecha_programada') ? 'preorden' : 'normal');
@@ -348,14 +344,10 @@ class OrdenController extends Controller
                 $estadoAnterior = $orden->estado;
 
                 $clienteId = $orden->cliente_id;
-                if ($request->has('cliente_id')) {
+                if ($request->filled('cliente_id')) {
                     $clienteId = $request->cliente_id;
                 } elseif ($request->filled('cliente_nombre')) {
-                    $cliente = Cliente::firstOrCreate(
-                        ['nombre' => $request->cliente_nombre],
-                        ['telefono' => $request->cliente_telefono]
-                    );
-                    $clienteId = $cliente->id;
+                    $clienteId = $this->resolverClientePorNombre($request->cliente_nombre, $request->cliente_telefono);
                 }
 
                 if (!$clienteId) {
@@ -429,10 +421,13 @@ class OrdenController extends Controller
                         ReservaStockModificador::where('sesion_id', $orden->codigo_publico)->delete();
                     }
                     $huboUnidadesNuevas = $this->sincronizarDetallesOrden($orden, $request->items, $usuarioId, $historialIds, !$esSolicitudCliente);
-                    if ($huboUnidadesNuevas && $orden->estado === 'listo') {
+                    if ($huboUnidadesNuevas && in_array($orden->estado, ['listo', 'entregado'], true)) {
                         // Una unidad adicional vuelve a abrir trabajo sin tocar los estados
                         // de las unidades que Cocina/Parrilla ya finalizaron.
-                        $orden->update(['estado' => 'preparando']);
+                        $orden->update([
+                            'estado' => 'preparando',
+                            'entregada_en' => null,
+                        ]);
                     }
                 }
                 if ($esSolicitudCliente) $this->reservarSolicitudClienteEditada($orden);
@@ -923,7 +918,11 @@ class OrdenController extends Controller
                 $idsActivos = $opciones->filter(fn ($opcion) => $opcion->activo)->pluck('id');
                 $cantidad = $elegidas->filter(fn ($id) => $idsActivos->contains($id))->count();
                 $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_requerida;
-                if ($cantidadRequerida !== null && $cantidad !== (int) $cantidadRequerida) {
+                $cantidadEsMaxima = $modificador->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_es_maxima;
+                if ($cantidadRequerida !== null && $cantidadEsMaxima && $cantidad > (int) $cantidadRequerida) {
+                    throw new \RuntimeException('Puedes elegir hasta ' . $cantidadRequerida . ' en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
+                }
+                if ($cantidadRequerida !== null && !$cantidadEsMaxima && $cantidad !== (int) $cantidadRequerida) {
                     throw new \RuntimeException('Debes elegir exactamente ' . $cantidadRequerida . ' en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
                 }
                 if ($cantidadRequerida === null && $modificador->requerido && $cantidad === 0) {
@@ -1028,6 +1027,18 @@ class OrdenController extends Controller
     private function esMesero(): bool
     {
         return mb_strtolower(auth('api')->user()?->role?->nombre ?? '') === 'mesero';
+    }
+
+    private function resolverClientePorNombre(string $nombre, ?string $telefono = null): int
+    {
+        $nombre = trim($nombre);
+        $cliente = Cliente::whereRaw('LOWER(TRIM(nombre)) = ?', [mb_strtolower($nombre)])->first();
+        if (!$cliente) {
+            $cliente = Cliente::create(['nombre' => $nombre, 'telefono' => $telefono]);
+        } elseif (!$cliente->telefono && $telefono) {
+            $cliente->update(['telefono' => $telefono]);
+        }
+        return (int) $cliente->id;
     }
 
     private function reservarSolicitudClienteEditada(Orden $orden): void

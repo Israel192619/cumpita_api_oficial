@@ -69,16 +69,69 @@ class AjusteStockController extends Controller
                 'usuario_id' => auth('api')->id(),
             ])->load(['producto:id,nombre', 'modificadorOpcion:id,nombre', 'usuario:id,name,username']);
 
-            StockActualizadoEvent::dispatch(
-                !empty($data['producto_id']) ? $inventariable->id : null,
-                $final,
-                !empty($data['modificador_opcion_id']) ? $inventariable->id : null,
-            );
+            if (!empty($data['producto_id'])) StockActualizadoEvent::dispatch($inventariable->id, $final);
 
             return response()->json([
                 'message' => 'Ajuste de stock registrado correctamente.',
                 'ajuste' => $ajuste,
                 'inventariable' => $inventariable->fresh(),
+            ], 201);
+        });
+    }
+
+    public function storeBatch(Request $request)
+    {
+        $data = $request->validate([
+            'producto_id' => 'required|exists:productos,id',
+            'items' => 'required|array|min:1|max:100',
+            'items.*.modificador_opcion_id' => 'required|integer|distinct|exists:modificador_opciones,id',
+            'items.*.cantidad' => 'required|integer|min:1',
+            'motivo' => 'nullable|string|max:255',
+        ]);
+
+        return DB::transaction(function () use ($data) {
+            $optionIds = collect($data['items'])->pluck('modificador_opcion_id')->map(fn ($id) => (int) $id);
+            $assignedOptionIds = Producto::findOrFail($data['producto_id'])->opciones()
+                ->whereIn('modificador_opciones.id', $optionIds)
+                ->pluck('modificador_opciones.id');
+
+            if ($assignedOptionIds->count() !== $optionIds->count()) {
+                return response()->json(['message' => 'Una de las opciones no pertenece a este producto.'], 422);
+            }
+
+            $options = ModificadorOpcion::whereIn('id', $optionIds)->lockForUpdate()->get()->keyBy('id');
+            $ajustes = collect();
+            $motivo = trim($data['motivo'] ?? '') ?: 'Reabastecimiento de opciones desde POS';
+
+            foreach ($options as $option) {
+                if (!$option->maneja_stock || $option->stock === null) {
+                    return response()->json(['message' => "La opción {$option->nombre} no tiene gestión de stock activa."], 422);
+                }
+            }
+
+            foreach ($data['items'] as $item) {
+                $option = $options->get((int) $item['modificador_opcion_id']);
+                $previousStock = (int) $option->stock;
+                $finalStock = $previousStock + (int) $item['cantidad'];
+                $option->update(['stock' => $finalStock]);
+                $ajustes->push(AjusteStock::create([
+                    'producto_id' => null,
+                    'modificador_opcion_id' => $option->id,
+                    'tipo' => 'ENTRADA',
+                    'cantidad' => $item['cantidad'],
+                    'stock_anterior' => $previousStock,
+                    'stock_final' => $finalStock,
+                    'motivo' => $motivo,
+                    'usuario_id' => auth('api')->id(),
+                ]));
+
+            }
+
+            return response()->json([
+                'message' => 'Reabastecimiento registrado correctamente.',
+                'ajustes' => AjusteStock::with(['modificadorOpcion:id,nombre', 'usuario:id,name,username'])
+                    ->whereKey($ajustes->pluck('id'))
+                    ->get(),
             ], 201);
         });
     }
@@ -119,11 +172,7 @@ class AjusteStockController extends Controller
 
             $inventariable->update(['stock' => $final]);
             $ajuste->update(['revertido_por_ajuste_id' => $reversion->id]);
-            StockActualizadoEvent::dispatch(
-                $ajuste->producto_id ? $inventariable->id : null,
-                $final,
-                $ajuste->modificador_opcion_id ? $inventariable->id : null,
-            );
+            if ($ajuste->producto_id) StockActualizadoEvent::dispatch($inventariable->id, $final);
 
             return response()->json([
                 'message' => 'Ajuste revertido correctamente.',

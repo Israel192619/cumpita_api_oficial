@@ -6,8 +6,12 @@ use Illuminate\Database\Eloquent\Model;
 
 class Modificador extends Model
 {
+    public function usaLimiteMaximo(): bool
+    {
+        return strcasecmp(trim($this->nombre ?? ''), 'Guarniciones') === 0;
+    }
     protected $table = 'modificadores';
-    protected $fillable = ['nombre', 'estacion_id', 'tipo', 'requerido', 'activo'];
+    protected $fillable = ['nombre', 'color_fondo', 'estacion_id', 'tipo', 'requerido', 'activo'];
 
     protected $casts = [
         'requerido' => 'boolean',

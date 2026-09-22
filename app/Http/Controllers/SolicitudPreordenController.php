@@ -90,7 +90,6 @@ class SolicitudPreordenController extends Controller
                 $producto = $productos->get($item['producto_id']);
                 abort_unless($producto?->activo && $producto->estacion?->activa, 422, 'Uno de los productos ya no está disponible.');
                 $elegidas = collect($item['modificador_opcion_ids'] ?? [])->map(fn ($id) => (int) $id);
-                abort_if($elegidas->unique()->count() !== $elegidas->count(), 422, 'Una opción de modificador está repetida dentro del mismo producto.');
                 $permitidas = $producto->opciones->where('activo', true)->pluck('id');
                 abort_if($elegidas->diff($permitidas)->isNotEmpty(), 422, 'Una opción elegida no pertenece al producto.');
                 $this->validarSeleccion($producto, $elegidas);
@@ -281,10 +280,6 @@ class SolicitudPreordenController extends Controller
             $producto = Producto::find($productoId);
             if ($producto?->maneja_stock && $producto->stock !== null) event(new StockActualizadoEvent($producto->id, (int) $producto->stock));
         }
-        foreach ($orden->detalles->flatMap->opciones->pluck('modificador_opcion_id')->unique() as $opcionId) {
-            $opcion = ModificadorOpcion::find($opcionId);
-            if ($opcion?->maneja_stock && $opcion->stock !== null) event(new StockActualizadoEvent(null, (int) $opcion->stock, $opcion->id));
-        }
         event(new PreordenActualizadaEvent($orden, 'solicitud_aceptada'));
         return response()->json(['message' => 'Solicitud aceptada como preorden programada.']);
     }
@@ -307,12 +302,15 @@ class SolicitudPreordenController extends Controller
 
     private function validarSeleccion(Producto $producto, $elegidas): void
     {
-        foreach ($producto->opciones->where('activo', true)->groupBy('modificador_id') as $opciones) {
+        foreach ($producto->opciones->groupBy('modificador_id') as $opciones) {
             $modificador = $opciones->first()->modificador;
             if (!$modificador?->activo) continue;
-            $cantidad = $elegidas->intersect($opciones->pluck('id'))->count();
+            $idsActivos = $opciones->where('activo', true)->pluck('id');
+            $cantidad = $elegidas->filter(fn ($id) => $idsActivos->contains($id))->count();
             $requerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_requerida;
-            abort_if($requerida !== null && $cantidad !== (int) $requerida, 422, "Debes elegir exactamente {$requerida} en {$modificador->nombre}.");
+            $esMaxima = $modificador->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_es_maxima;
+            abort_if($requerida !== null && $esMaxima && $cantidad > (int) $requerida, 422, "Puedes elegir hasta {$requerida} en {$modificador->nombre}.");
+            abort_if($requerida !== null && !$esMaxima && $cantidad !== (int) $requerida, 422, "Debes elegir exactamente {$requerida} en {$modificador->nombre}.");
             abort_if($requerida === null && $modificador->requerido && $cantidad === 0, 422, "Debes elegir una opción en {$modificador->nombre}.");
             abort_if($requerida === null && $modificador->tipo === 'unico' && $cantidad > 1, 422, "Solo puedes elegir una opción en {$modificador->nombre}.");
         }

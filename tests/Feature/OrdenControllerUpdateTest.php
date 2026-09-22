@@ -11,6 +11,7 @@ use App\Models\Role;
 use App\Models\User;
 use App\Models\EstacionTrabajo;
 use App\Models\OrdenDetalle;
+use App\Models\PagoOrden;
 use App\Events\OrdenCocinaActualizadaEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
@@ -186,5 +187,61 @@ class OrdenControllerUpdateTest extends TestCase
         $this->assertSame(2, $cinco->filter(fn ($detalle) => $detalle->estadosEstacion->first()?->estado === 'servido')->count());
         $this->assertSame(3, $cinco->filter(fn ($detalle) => $detalle->estadosEstacion->first()?->estado === 'pendiente')->count());
         $this->assertDatabaseHas('productos', ['id' => $producto->id, 'stock' => 6]);
+    }
+
+    public function test_aumentar_una_orden_pagada_y_entregada_reabre_solo_la_unidad_nueva(): void
+    {
+        Event::fake([OrdenCocinaActualizadaEvent::class]);
+        $role = Role::create(['nombre' => 'Cajero']);
+        $user = User::factory()->create(['role_id' => $role->id]);
+        $cliente = Cliente::create(['nombre' => 'Cliente orden pagada']);
+        $categoria = Categoria::create(['nombre' => 'Pescados']);
+        $estacion = EstacionTrabajo::create([
+            'nombre' => 'Parrilla', 'codigo' => 'PARRILLA', 'activa' => true, 'orden' => 1,
+        ]);
+        $producto = Producto::create([
+            'categoria_id' => $categoria->id, 'estacion_id' => $estacion->id,
+            'nombre' => 'Pescado mediano', 'precio' => 45, 'activo' => true,
+            'maneja_stock' => false, 'stock' => null, 'stock_minimo' => 0,
+        ]);
+        $orden = Orden::create([
+            'user_id' => $user->id, 'cliente_id' => $cliente->id, 'numero_orden' => 3,
+            'subtotal' => 45, 'total' => 45, 'estado' => 'entregado',
+            'estado_pago' => 'completado', 'entregada_en' => now(),
+        ]);
+        $detalleEntregado = OrdenDetalle::create([
+            'orden_id' => $orden->id, 'producto_id' => $producto->id,
+            'estacion_id' => $estacion->id, 'cantidad' => 1,
+            'precio_unitario' => 45, 'estado_cocina' => 'servido', 'fecha_servido' => now(),
+        ]);
+        $detalleEntregado->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+        PagoOrden::create([
+            'id_orden' => $orden->id, 'monto_recibido' => 45, 'monto_pagado' => 45,
+            'cambio_devuelto' => 0, 'metodo_pago' => 'efectivo', 'tipo_pago' => 'pago',
+            'fecha_pago' => now(),
+        ]);
+
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
+            'cliente_id' => $cliente->id, 'subtotal' => 90, 'total' => 90,
+            'items' => [[
+                'orden_detalle_id' => $detalleEntregado->id,
+                'producto_id' => $producto->id,
+                'cantidad' => 2,
+                'precio_unitario' => 45,
+                'modificadores' => [],
+            ]],
+        ])->assertOk()
+            ->assertJsonPath('orden.estado', 'preparando')
+            ->assertJsonPath('orden.estado_pago', 'parcial');
+
+        $detalles = $orden->detalles()->with('estadosEstacion')->orderBy('id')->get();
+        $this->assertCount(2, $detalles);
+        $this->assertSame('servido', $detalles[0]->estado_cocina);
+        $this->assertSame('servido', $detalles[0]->estadosEstacion->first()?->estado);
+        $this->assertSame('pendiente', $detalles[1]->estado_cocina);
+        $this->assertSame('pendiente', $detalles[1]->estadosEstacion->first()?->estado);
+        $this->assertNull($orden->fresh()->entregada_en);
+        Event::assertDispatched(OrdenCocinaActualizadaEvent::class);
     }
 }

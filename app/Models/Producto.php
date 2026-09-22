@@ -108,24 +108,28 @@ class Producto extends Model
                 
                 // Validación por si acaso una opción se quedó sin grupo asignado
                 $modificador = $primerElemento ? $primerElemento->modificador : null;
-                if (!$modificador) return null;
+                if (!$modificador || !$modificador->activo) return null;
 
                 return [
                     'id' => $modificador->id,
                     'nombre' => $modificador->nombre,
+                    'color_fondo' => $modificador->color_fondo,
                     'tipo' => $modificador->tipo,          // 'unico' o 'multiple'
                     'requerido' => (bool) $modificador->requerido,
                     'cantidad_requerida' => $configuraciones->get($modificador->id)?->cantidad_requerida,
-                    'opciones' => $opciones->map(function ($opc) {
+                    'cantidad_es_maxima' => $modificador->usaLimiteMaximo() || (bool) ($configuraciones->get($modificador->id)?->cantidad_es_maxima),
+                    'opciones' => $opciones->filter(fn ($opc) => $opc->activo)->map(function ($opc) {
                         return [
                             'id' => $opc->id,
                             'nombre' => $opc->nombre,
-                        'precio_extra' => $opc->precio_extra,
-                        'activo' => $opc->activo,
-                        'maneja_stock' => $opc->maneja_stock,
-                        'stock' => $opc->stock,
-                        'stock_minimo' => $opc->stock_minimo,
-                        'stock_disponible' => $opc->maneja_stock && $opc->stock !== null ? max(0, (int) $opc->stock) : null,
+                            'precio_extra' => $opc->precio_extra,
+                            'activo' => $opc->activo,
+                            'imagen_url' => $opc->imagen_url,
+                            'mostrar_imagen' => (bool) $opc->mostrar_imagen,
+                            'maneja_stock' => $opc->maneja_stock,
+                            'stock' => $opc->stock,
+                            'stock_minimo' => $opc->stock_minimo,
+                            'stock_disponible' => $opc->maneja_stock && $opc->stock !== null ? max(0, (int) $opc->stock) : null,
                             'predeterminado' => (bool) $opc->pivot->predeterminado // Tu lógica de pivote funciona perfecto
                         ];
                     })->values()
@@ -138,7 +142,7 @@ class Producto extends Model
     public function getImagenUrlAttribute()
     {
         return $this->imagen
-            ? asset('storage/' . $this->imagen)
+            ? '/storage/' . ltrim($this->imagen, '/')
             : null;
     }
 }

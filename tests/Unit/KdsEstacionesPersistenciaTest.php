@@ -77,6 +77,16 @@ class KdsEstacionesPersistenciaTest extends TestCase
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle1->id, 'estacion_id' => 1]);
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle1->id, 'estacion_id' => 2]);
         $this->assertDatabaseHas('orden_detalle_estaciones', ['orden_detalle_id' => $detalle2->id, 'estacion_id' => 1]);
+        $estadoCocina = $detalle1->estadosEstacion()->where('estacion_id', 1)->firstOrFail();
+        $estadoCocina->update(['estado' => 'servido']);
+        // Reproduce el catálogo parcial que usaba Servicio: sin estacion_id.
+        $parcial = OrdenDetalle::with('opciones.modificadorOpcion.modificador:id,nombre')->findOrFail($detalle1->id);
+        $kds = app(\App\Services\KdsEstacionService::class);
+        $kds->sincronizar(collect([$parcial]));
+        $this->assertDatabaseHas('orden_detalle_estaciones', ['id' => $estadoCocina->id, 'estado' => 'servido']);
+        $parcial = OrdenDetalle::with('opciones.modificadorOpcion.modificador:id,nombre')->findOrFail($detalle1->id);
+        $kds->sincronizarDetalle($parcial);
+        $this->assertDatabaseHas('orden_detalle_estaciones', ['id' => $estadoCocina->id, 'estado' => 'servido']);
     }
 
     public function test_cocina_desbloquea_solo_la_guarnicion_del_pescado_terminado(): void

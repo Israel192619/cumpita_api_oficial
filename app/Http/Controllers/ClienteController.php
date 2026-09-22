@@ -57,6 +57,18 @@ class ClienteController extends Controller
             'foto_local' => 'nullable|image|max:5120',
         ]);
 
+        $validatedData['nombre'] = trim($validatedData['nombre']);
+        $clienteExistente = Cliente::whereRaw('LOWER(TRIM(nombre)) = ?', [mb_strtolower($validatedData['nombre'])])->first();
+        if ($clienteExistente) {
+            if (!$clienteExistente->telefono && !empty($validatedData['telefono'])) {
+                $clienteExistente->update(['telefono' => $validatedData['telefono']]);
+            }
+            return response()->json([
+                'cliente' => $clienteExistente->fresh(),
+                'message' => 'El cliente ya existía y fue seleccionado.',
+            ], 200);
+        }
+
         if ($request->hasFile('foto_local')) {
             $validatedData['foto_local'] = $request->file('foto_local')->store('clientes/locales', 'public');
         }

@@ -5,12 +5,13 @@ namespace App\Events;
 use App\Models\Orden;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
+use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
+use Illuminate\Contracts\Broadcasting\ShouldRescue;
 use Illuminate\Contracts\Events\ShouldDispatchAfterCommit;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class PreordenActualizadaEvent implements ShouldBroadcast, ShouldDispatchAfterCommit
+class PreordenActualizadaEvent implements ShouldBroadcastNow, ShouldDispatchAfterCommit, ShouldRescue
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 

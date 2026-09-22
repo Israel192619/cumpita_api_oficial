@@ -67,6 +67,7 @@ Route::middleware('jwt')->group(function () {
         Route::apiResource('productos', ProductoController::class)->except(['index', 'show']);
         Route::get('ajustes-stock', [AjusteStockController::class, 'index']);
         Route::post('ajustes-stock', [AjusteStockController::class, 'store']);
+        Route::post('ajustes-stock/lote', [AjusteStockController::class, 'storeBatch']);
         Route::post('ajustes-stock/{ajuste}/revertir', [AjusteStockController::class, 'revertir']);
         // El formulario de edición consulta GET /mesas/{mesa}; no excluir show.
         Route::put('mesas-plano', [MesaController::class, 'actualizarPlano']);
@@ -137,7 +138,11 @@ Route::middleware('jwt')->group(function () {
     });
 
     Route::middleware('access:servicio')->group(function () {
+        Route::get('servicio/mesas', [MesaController::class, 'index']);
+        Route::patch('servicio/fichas/{orden}/mesa', [ServicioController::class, 'actualizarMesa']);
         Route::get('servicio/productos', [ProductoController::class, 'index']);
+        Route::post('servicio/reservas-stock/sincronizar', [ReservaStockController::class, 'sincronizar']);
+        Route::delete('servicio/reservas-stock', [ReservaStockController::class, 'liberar']);
         Route::get('servicio/ordenes/buscar', [OrdenAdicionalController::class, 'buscar']);
         Route::get('servicio/ordenes/{orden}', [OrdenAdicionalController::class, 'show']);
         Route::post('servicio/ordenes/{orden}/adicionales', [OrdenAdicionalController::class, 'store']);
@@ -148,7 +153,9 @@ Route::middleware('jwt')->group(function () {
         Route::post('servicio/fichas/{orden}/liberar', [ServicioController::class, 'liberar']);
         Route::post('servicio/detalles/{detalle}/colaborar', [ServicioController::class, 'colaborar']);
         Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);
+        Route::patch('servicio/detalles/{detalle}/desconfirmar', [ServicioController::class, 'desconfirmarDetalle']);
         Route::post('servicio/fichas/{orden}/entregar', [ServicioController::class, 'entregar']);
+        Route::patch('servicio/fichas/{orden}/cubiertos', [ServicioController::class, 'actualizarCubiertos']);
         Route::post('servicio/clientes/{cliente}/ubicacion', [ServicioController::class, 'actualizarUbicacionCliente']);
     });
 });

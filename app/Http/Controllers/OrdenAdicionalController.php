@@ -12,6 +12,9 @@ use App\Models\OrdenDetalleOpcion;
 use App\Models\PagoOrden;
 use App\Models\Producto;
 use App\Models\ModificadorOpcion;
+use App\Models\ReservaStock;
+use App\Models\ReservaStockModificador;
+use App\Events\ReservaStockActualizadaEvent;
 use App\Services\KdsEstacionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -59,8 +62,11 @@ class OrdenAdicionalController extends Controller
             abort_unless($producto->activo && $producto->estacion_id && $producto->estacion?->activa, 422, 'El producto no está disponible para producción.');
 
             $cantidad = $request->integer('cantidad');
+            $sesionReserva = $request->input('reserva_sesion');
             if ($producto->maneja_stock && $producto->stock !== null) {
-                abort_if((int) $producto->stock < $cantidad, 422, 'No hay suficiente stock para '.$producto->nombre.'.');
+                $reservado = ReservaStock::activas()->where('producto_id', $producto->id)
+                    ->when($sesionReserva, fn ($query) => $query->where('sesion_id', '!=', $sesionReserva))->sum('cantidad');
+                abort_if((int) $producto->stock - $reservado < $cantidad, 422, 'No hay suficiente stock para '.$producto->nombre.'.');
                 $producto->decrement('stock', $cantidad);
             }
 
@@ -72,9 +78,12 @@ class OrdenAdicionalController extends Controller
             foreach ($producto->opciones->filter(fn ($opcion) => $opcion->modificador?->activo)->groupBy('modificador_id') as $grupo) {
                 $modificador = $grupo->first()?->modificador;
                 $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador?->id)?->cantidad_requerida;
+                $cantidadEsMaxima = $modificador?->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador?->id)?->cantidad_es_maxima;
                 $idsActivos = $grupo->filter(fn ($opcion) => $opcion->activo)->pluck('id');
                 $cantidadSeleccionada = $idsSeleccionados->filter(fn ($id) => $idsActivos->contains($id))->count();
-                abort_if($cantidadRequerida !== null && $cantidadSeleccionada !== (int) $cantidadRequerida, 422,
+                abort_if($cantidadRequerida !== null && $cantidadEsMaxima && $cantidadSeleccionada > (int) $cantidadRequerida, 422,
+                    'Puedes elegir hasta '.$cantidadRequerida.' en '.$modificador->nombre.'.');
+                abort_if($cantidadRequerida !== null && !$cantidadEsMaxima && $cantidadSeleccionada !== (int) $cantidadRequerida, 422,
                     'Debes elegir exactamente '.$cantidadRequerida.' en '.$modificador->nombre.'.');
                 abort_if($cantidadRequerida === null && $modificador?->requerido && $cantidadSeleccionada === 0, 422,
                     'Debes elegir una opción de '.$modificador->nombre.'.');
@@ -89,7 +98,9 @@ class OrdenAdicionalController extends Controller
             foreach ($usoOpciones as $opcionId => $usos) {
                 $opcion = $opcionesBloqueadas->get($opcionId);
                 if ($opcion?->maneja_stock && $opcion->stock !== null) {
-                    abort_if((int) $opcion->stock < $usos, 422, 'No hay suficientes unidades de '.$opcion->nombre.'.');
+                    $reservado = ReservaStockModificador::activas()->where('modificador_opcion_id', $opcionId)
+                        ->when($sesionReserva, fn ($query) => $query->where('sesion_id', '!=', $sesionReserva))->sum('cantidad');
+                    abort_if((int) $opcion->stock - $reservado < $usos, 422, 'No hay suficientes unidades de '.$opcion->nombre.'.');
                     $opcion->decrement('stock', $usos);
                 }
             }
@@ -139,6 +150,11 @@ class OrdenAdicionalController extends Controller
                 'estado_pago' => $pagado <= 0 ? 'pendiente' : ($pagado < $total ? 'parcial' : 'completado'),
             ]);
 
+            if ($sesionReserva) {
+                ReservaStock::where('sesion_id', $sesionReserva)->delete();
+                ReservaStockModificador::where('sesion_id', $sesionReserva)->delete();
+            }
+            ReservaStockActualizadaEvent::dispatch([$producto->id], $usoOpciones->keys()->all());
             return ['orden' => $orden->fresh(), 'detalles' => $detalles];
         });
 

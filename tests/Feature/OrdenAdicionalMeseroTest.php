@@ -126,6 +126,56 @@ class OrdenAdicionalMeseroTest extends TestCase
         ])->assertStatus(422);
     }
 
+    public function test_adicional_respeta_reservas_ajenas_y_consume_solo_la_propia(): void
+    {
+        [$mesero, $orden, $producto] = $this->escenario();
+        $token = JWTAuth::fromUser($mesero);
+        $otra = (string) \Illuminate\Support\Str::uuid();
+        $propia = (string) \Illuminate\Support\Str::uuid();
+        $this->withToken($token)->postJson('/api/reservas-stock/sincronizar', [
+            'sesion_id' => $otra, 'items' => [['producto_id' => $producto->id, 'cantidad' => 9]], 'opciones' => [],
+        ])->assertOk();
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", [
+            'producto_id' => $producto->id, 'cantidad' => 2,
+        ])->assertUnprocessable();
+        $this->assertEquals(10, $producto->fresh()->stock);
+        $this->withToken($token)->postJson('/api/servicio/reservas-stock/sincronizar', [
+            'sesion_id' => $propia, 'items' => [['producto_id' => $producto->id, 'cantidad' => 1]], 'opciones' => [],
+        ])->assertOk();
+        $this->withToken($token)->getJson('/api/servicio/productos?reserva_sesion='.$propia)
+            ->assertOk()->assertJsonPath('productos.0.stock_disponible', 1);
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", [
+            'producto_id' => $producto->id, 'cantidad' => 1, 'reserva_sesion' => $propia,
+        ])->assertCreated();
+        $this->assertEquals(9, $producto->fresh()->stock);
+        $this->assertDatabaseMissing('reservas_stock', ['sesion_id' => $propia]);
+        $this->assertDatabaseHas('reservas_stock', ['sesion_id' => $otra, 'cantidad' => 9]);
+    }
+
+    public function test_reservas_de_presas_se_comparten_con_pos_y_se_liberan_al_cancelar(): void
+    {
+        [$mesero, $orden, $producto] = $this->escenario();
+        $grupo = Modificador::create(['nombre' => 'Presas', 'tipo' => 'multiple', 'requerido' => true, 'activo' => true]);
+        $opcion = ModificadorOpcion::create(['modificador_id' => $grupo->id, 'nombre' => 'Pecho', 'precio_extra' => 0, 'activo' => true, 'maneja_stock' => true, 'stock' => 2]);
+        $producto->opciones()->attach($opcion->id, ['predeterminado' => false]);
+        $token = JWTAuth::fromUser($mesero);
+        $sesion = (string) \Illuminate\Support\Str::uuid();
+        $this->withToken($token)->postJson('/api/servicio/reservas-stock/sincronizar', [
+            'sesion_id' => $sesion, 'items' => [], 'opciones' => [['modificador_opcion_id' => $opcion->id, 'cantidad' => 2]],
+        ])->assertOk();
+        $this->withToken($token)->getJson('/api/productos')->assertOk()
+            ->assertJsonPath('productos.0.modificadores.0.opciones.0.stock_disponible', 0);
+        $this->withToken($token)->postJson('/api/reservas-stock/sincronizar', [
+            'sesion_id' => (string) \Illuminate\Support\Str::uuid(), 'items' => [], 'opciones' => [['modificador_opcion_id' => $opcion->id, 'cantidad' => 1]],
+        ])->assertUnprocessable();
+        $payload = ['producto_id' => $producto->id, 'cantidad' => 1, 'modificador_opcion_ids' => [$opcion->id]];
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", $payload)->assertUnprocessable();
+        $this->assertEquals(10, $producto->fresh()->stock);
+        $this->withToken($token)->deleteJson('/api/servicio/reservas-stock', ['sesion_id' => $sesion])->assertNoContent();
+        $this->withToken($token)->postJson("/api/servicio/ordenes/{$orden->id}/adicionales", $payload)->assertCreated();
+        $this->assertEquals(1, $opcion->fresh()->stock);
+    }
+
     private function escenario(): array
     {
         $role = Role::create(['nombre' => 'Mesero']);

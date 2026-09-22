@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\ServicioSesionActualizadaEvent;
+use App\Events\ServicioFichaActualizadaEvent;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\UserController;
@@ -57,6 +58,7 @@ class ServicioControllerTest extends TestCase
             $table->timestamp('fecha_orden')->nullable(); $table->timestamp('fecha_programada')->nullable();
             $table->timestamp('preorden_activada_en')->nullable();
             $table->timestamp('tomada_en')->nullable(); $table->timestamp('entregada_en')->nullable(); $table->timestamps();
+            $table->boolean('cubiertos_entregados')->default(false);
         });
         Schema::create('productos', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('estacion_id')->nullable(); $table->string('nombre'); $table->timestamps();
@@ -64,7 +66,7 @@ class ServicioControllerTest extends TestCase
         Schema::create('modificadores', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('estacion_id')->nullable(); $table->string('nombre');
             $table->string('tipo')->default('unico'); $table->boolean('requerido')->default(false);
-            $table->boolean('activo')->default(true); $table->timestamps();
+            $table->boolean('activo')->default(true); $table->string('color_fondo', 7)->nullable(); $table->timestamps();
         });
         Schema::create('modificador_opciones', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('modificador_id'); $table->string('nombre');
@@ -93,7 +95,7 @@ class ServicioControllerTest extends TestCase
             $table->json('datos_nuevo')->nullable(); $table->timestamps();
         });
 
-        Event::fake([OrdenCocinaActualizadaEvent::class, ServicioSesionActualizadaEvent::class]);
+        Event::fake([OrdenCocinaActualizadaEvent::class, ServicioSesionActualizadaEvent::class, ServicioFichaActualizadaEvent::class]);
     }
 
     protected function tearDown(): void
@@ -246,9 +248,70 @@ class ServicioControllerTest extends TestCase
         $this->assertDatabaseMissing('orden_detalle_estaciones', [
             'orden_detalle_id' => $detalle->id, 'estado' => 'pendiente',
         ]);
+        try {
+            $controller->entregar($orden->fresh());
+            $this->fail('No se debe entregar la ficha sin confirmar los cubiertos.');
+        } catch (HttpExceptionInterface $e) {
+            $this->assertSame(422, $e->getStatusCode());
+        }
+        $orden->update(['cubiertos_entregados' => true]);
         $this->assertSame(200, $controller->entregar($orden->fresh())->status());
         $this->assertSame('entregado', $orden->fresh()->estado);
         $this->assertNotNull($orden->fresh()->entregada_en);
+        $fechaEntrega = $orden->fresh()->entregada_en;
+        $this->assertSame(200, $controller->entregar($orden->fresh())->status());
+        $this->assertEquals($fechaEntrega, $orden->fresh()->entregada_en);
+    }
+
+    public function test_desmarcar_servido_restaura_el_estado_previo_de_cada_estacion(): void
+    {
+        [$mesero] = $this->meseros();
+        $orden = Orden::create([
+            'user_id' => $mesero->id, 'mesero_id' => $mesero->id,
+            'numero_orden' => 127, 'estado' => 'listo', 'tomada_en' => now(),
+        ]);
+        $producto = Producto::create(['nombre' => 'Pollo', 'estacion_id' => 2]);
+        $modificador = Modificador::create([
+            'nombre' => 'Guarnición', 'estacion_id' => 1, 'tipo' => 'unico', 'requerido' => true, 'activo' => true,
+        ]);
+        $opcion = ModificadorOpcion::create([
+            'modificador_id' => $modificador->id, 'nombre' => 'Papa', 'precio_extra' => 0, 'activo' => true,
+        ]);
+        $detalle = OrdenDetalle::create([
+            'orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 2,
+            'cantidad' => 1, 'precio_unitario' => 20, 'estado_cocina' => 'en_preparacion',
+        ]);
+        OrdenDetalleOpcion::create([
+            'orden_detalle_id' => $detalle->id, 'modificador_opcion_id' => $opcion->id, 'precio_extra' => 0,
+        ]);
+        app(KdsEstacionService::class)->sincronizarDetalle($detalle->fresh());
+        $detalle->estadosEstacion()->where('estacion_id', 2)->update(['estado' => 'en_preparacion']);
+        $detalle->estadosEstacion()->where('estacion_id', 1)->update(['estado' => 'listo_para_recoger']);
+        $this->assertSame('listo_para_recoger', $detalle->estadosEstacion()->where('estacion_id', 1)->value('estado'));
+        $this->autenticarServicio($mesero);
+        $controller = new ServicioController();
+
+        $controller->confirmarDetalle($detalle, app(KdsEstacionService::class));
+        $this->assertTrue($detalle->fresh()->estadosEstacion->every(fn ($estado) => $estado->estado === 'servido'));
+        $estadosGuardados = collect(\App\Models\HistorialCambioOrden::latest('id')->firstOrFail()->datos_anterior['estados_estacion'])->keyBy('estacion_id');
+        $this->assertSame('en_preparacion', $estadosGuardados->get(2)['estado']);
+        $this->assertSame('listo_para_recoger', $estadosGuardados->get(1)['estado']);
+
+        $response = $controller->desconfirmarDetalle($detalle->fresh(), app(KdsEstacionService::class));
+
+        $this->assertSame(200, $response->status());
+        $this->assertFalse($response->getData(true)['servido']);
+        $this->assertFalse($response->getData(true)['listo']);
+        $this->assertSame('en_preparacion', $detalle->fresh()->estado_cocina);
+        $this->assertDatabaseHas('orden_detalle_estaciones', [
+            'orden_detalle_id' => $detalle->id, 'estacion_id' => 2, 'estado' => 'en_preparacion',
+        ]);
+        $this->assertDatabaseHas('orden_detalle_estaciones', [
+            'orden_detalle_id' => $detalle->id, 'estacion_id' => 1, 'estado' => 'listo_para_recoger',
+        ]);
+        $this->assertSame('preparando', $orden->fresh()->estado);
+        $this->assertFalse(app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh())['servido']);
+        Event::assertDispatched(OrdenCocinaActualizadaEvent::class, fn ($evento) => $evento->ordenId === $orden->id);
     }
 
     public function test_pin_de_mesero_se_valida_con_hash(): void
@@ -397,6 +460,7 @@ class ServicioControllerTest extends TestCase
             $this->assertSame(403, $error->getStatusCode());
         }
         $this->autenticarServicio($responsable);
+        $orden->update(['cubiertos_entregados' => true]);
         $controller->entregar($orden);
         $this->assertSame('entregado', $orden->fresh()->estado);
     }
@@ -496,6 +560,7 @@ class ServicioControllerTest extends TestCase
         $controller->liberar($orden);
         $this->autenticarServicio($ana);
         $controller->tomar($orden);
+        $orden->update(['cubiertos_entregados' => true]);
         $controller->entregar($orden);
         $this->assertSame('entregado', $orden->fresh()->estado);
         $this->assertSame($ana->name, $colaboracion->estado($refresco->fresh())['entregado_por']);
@@ -535,6 +600,24 @@ class ServicioControllerTest extends TestCase
             Schema::dropIfExists('producto_modificador_configuraciones');
             Schema::dropIfExists('producto_opciones');
         }
+    }
+
+    public function test_cubiertos_pueden_marcarse_y_desmarcarse_y_notifican_a_servicio(): void
+    {
+        [$mesero] = $this->meseros();
+        $orden = Orden::create(['user_id' => $mesero->id, 'numero_orden' => 906, 'estado' => 'pendiente']);
+        $controller = new ServicioController();
+        $this->autenticarServicio($mesero);
+
+        $marcada = $controller->actualizarCubiertos(new Request(['cubiertos_entregados' => true]), $orden);
+        $this->assertTrue($marcada->getData(true)['cubiertos_entregados']);
+        $this->assertTrue($orden->fresh()->cubiertos_entregados);
+        Event::assertDispatched(ServicioFichaActualizadaEvent::class, fn ($evento) =>
+            $evento->ordenId === $orden->id && $evento->accion === 'cubiertos');
+
+        $desmarcada = $controller->actualizarCubiertos(new Request(['cubiertos_entregados' => false]), $orden->fresh());
+        $this->assertFalse($desmarcada->getData(true)['cubiertos_entregados']);
+        $this->assertFalse($orden->fresh()->cubiertos_entregados);
     }
 
     private function autenticarServicio(User $mesero): void

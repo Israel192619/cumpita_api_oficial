@@ -24,7 +24,7 @@ class ServicioColaboracionService
         ];
     }
 
-    public function registrar(OrdenDetalle $detalle, int $usuarioId, string $accion): void
+    public function registrar(OrdenDetalle $detalle, int $usuarioId, string $accion, ?array $datosAnteriores = null): void
     {
         HistorialCambioOrden::create([
             'orden_id' => $detalle->orden_id,
@@ -32,6 +32,7 @@ class ServicioColaboracionService
             'producto_id' => $detalle->producto_id,
             'user_id' => $usuarioId,
             'tipo_cambio' => 'estado_cambiado',
+            'datos_anterior' => $datosAnteriores,
             'datos_nuevo' => ['origen' => 'colaboracion_servicio', 'accion' => $accion],
         ]);
         $detalle->unsetRelation('historialCambios');

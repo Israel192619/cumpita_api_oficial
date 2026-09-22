@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\CajaActualizadaEvent;
 use App\Models\Orden;
 use App\Models\PagoOrden;
 use App\Models\Caja;
@@ -159,6 +160,11 @@ class PagoOrdenController extends Controller
             $orden->save();
 
             $saldoPendiente = max(0, (float) $orden->total - (float) $pagosTotales);
+
+            event(new CajaActualizadaEvent(
+                (int) ($cajaId ?? 0),
+                $tipoPago === 'devolucion' ? 'devolucion_registrada' : 'pago_registrado'
+            ));
 
             return response()->json([
                 'mensaje'         => 'Pago procesado correctamente.',

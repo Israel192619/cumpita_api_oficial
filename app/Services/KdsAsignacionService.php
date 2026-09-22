@@ -60,16 +60,18 @@ class KdsAsignacionService
             ->orderBy('created_at')->get();
 
         $asignaciones = KdsAsignacion::where('estacion_id', $estacionId)->lockForUpdate()->get();
+        $ordenesAsignadas = Orden::with('detalles.estadosEstacion')->whereKey($asignaciones->pluck('orden_id'))->get()->keyBy('id');
         foreach ($asignaciones as $asignacion) {
-            if (!$sesiones->contains('user_id', $asignacion->user_id) || !$this->ordenTieneTrabajoActivo($asignacion->orden_id, $estacionId)) {
+            if (!$sesiones->contains('user_id', $asignacion->user_id) || !isset($ordenesAsignadas[$asignacion->orden_id]) || !$this->ordenEsTrabajable($ordenesAsignadas[$asignacion->orden_id], $estacionId)) {
                 $asignacion->delete();
             }
         }
 
         $ordenes = $this->colaDisponible($estacionId);
         $ocupadas = KdsAsignacion::where('estacion_id', $estacionId)->pluck('orden_id')->all();
+        $usuariosConFicha = KdsAsignacion::where('estacion_id', $estacionId)->pluck('user_id')->all();
         foreach ($sesiones as $sesion) {
-            $tieneFicha = KdsAsignacion::where('estacion_id', $estacionId)->where('user_id', $sesion->user_id)->exists();
+            $tieneFicha = in_array($sesion->user_id, $usuariosConFicha, true);
             if ($tieneFicha) continue;
             $ordenId = $ordenes->first(fn (Orden $orden) => !in_array($orden->id, $ocupadas, true))?->id;
             if (!$ordenId) continue;
@@ -86,11 +88,12 @@ class KdsAsignacionService
     /** @return array<int, array{user_id:int,nombre:string,color:string}> */
     public function asignacionesParaEstacion(int $estacionId): array
     {
+        $colores = KdsSesion::where('estacion_id', $estacionId)->pluck('color', 'user_id');
         return KdsAsignacion::with(['usuario:id,name'])
             ->where('estacion_id', $estacionId)
             ->get()
-            ->mapWithKeys(function (KdsAsignacion $asignacion) use ($estacionId) {
-                $color = KdsSesion::where('user_id', $asignacion->user_id)->where('estacion_id', $estacionId)->value('color') ?? 'amarillo';
+            ->mapWithKeys(function (KdsAsignacion $asignacion) use ($colores) {
+                $color = $colores[$asignacion->user_id] ?? 'amarillo';
                 return [$asignacion->orden_id => [
                     'user_id' => $asignacion->user_id,
                     'nombre' => $asignacion->usuario?->name ?? 'Cocinero',

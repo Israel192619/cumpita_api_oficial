@@ -17,6 +17,6 @@ class Cliente extends Model
 
     public function getFotoLocalUrlAttribute(): ?string
     {
-        return $this->foto_local ? asset('storage/'.$this->foto_local) : null;
+        return $this->foto_local ? '/storage/'.ltrim($this->foto_local, '/') : null;
     }
 }
