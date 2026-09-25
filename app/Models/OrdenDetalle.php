@@ -16,6 +16,8 @@ class OrdenDetalle extends Model
     protected $fillable = [
         'orden_id',
         'producto_id',
+        'producto_combinacion_id',
+        'combinacion_nombre',
         'estacion_id',
         'cantidad',
         'precio_unitario',
@@ -53,6 +55,11 @@ class OrdenDetalle extends Model
     public function opciones()
     {
         return $this->hasMany(OrdenDetalleOpcion::class);
+    }
+
+    public function combinacion()
+    {
+        return $this->belongsTo(ProductoCombinacion::class, 'producto_combinacion_id');
     }
 
     /** Estación congelada cuando se creó el detalle; no depende de cambios posteriores del producto. */

@@ -53,6 +53,10 @@ class Orden extends Model
         'total',
         'estado',
         'estado_pago',
+        'delivery_monto_esperado',
+        'delivery_cambio_preparado',
+        'delivery_cambio_preparado_por',
+        'delivery_cambio_preparado_en',
         'observaciones',
         'version',
         'tipo_orden'
@@ -68,6 +72,9 @@ class Orden extends Model
         'total' => 'decimal:2',
         'estado' => 'string',
         'estado_pago' => 'string',
+        'delivery_monto_esperado' => 'decimal:2',
+        'delivery_cambio_preparado' => 'boolean',
+        'delivery_cambio_preparado_en' => 'datetime',
         'tipo_orden' => 'string',
         'tomada_en' => 'datetime',
         'entregada_en' => 'datetime',
@@ -90,6 +97,11 @@ class Orden extends Model
     public function mesero()
     {
         return $this->belongsTo(User::class, 'mesero_id');
+    }
+
+    public function deliveryCambioPreparadoPor()
+    {
+        return $this->belongsTo(User::class, 'delivery_cambio_preparado_por');
     }
 
     public function preordenActivadaPor()
@@ -157,6 +169,19 @@ class Orden extends Model
     public function cliente()
     {
         return $this->belongsTo(Cliente::class);
+    }
+
+    public function comentarioGeneral(): ?string
+    {
+        $comentario = trim((string) $this->observaciones);
+        if ($comentario === '') return null;
+
+        $cliente = $this->relationLoaded('cliente') ? $this->cliente?->nombre : null;
+        if ($cliente && mb_strtolower($comentario) === mb_strtolower('Cliente: ' . trim($cliente))) {
+            return null;
+        }
+
+        return $comentario;
     }
 
     /**

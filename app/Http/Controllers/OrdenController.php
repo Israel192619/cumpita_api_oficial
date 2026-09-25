@@ -3,10 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Events\OrdenCreadaEvent;
+use App\Jobs\SendGrillOrderPush;
 use App\Events\OrdenCocinaActualizadaEvent;
 use App\Events\PreordenActualizadaEvent;
 use App\Events\CajaActualizadaEvent;
 use App\Events\StockActualizadoEvent;
+use App\Events\ServicioFichaActualizadaEvent;
 use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
@@ -15,6 +17,7 @@ use App\Models\PagoOrden;
 use App\Models\Cliente;
 use App\Models\Caja;
 use App\Models\Producto;
+use App\Models\ProductoCombinacion;
 use App\Models\ModificadorOpcion;
 use App\Models\ReservaStock;
 use App\Models\ReservaStockModificador;
@@ -31,7 +34,7 @@ class OrdenController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
+        $query = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
             ->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhereIn('estado_solicitud', ['aceptada', 'rechazada']))
             ->withMax('cambiosMesero as ultimo_cambio_mesero_en', 'created_at')
             ->when($request->filled('tipo_flujo'), fn ($query) => $query->where('tipo_flujo', $request->input('tipo_flujo')))
@@ -77,6 +80,53 @@ class OrdenController extends Controller
         ], 200);
     }
 
+    public function prepararCambioDelivery(Request $request, Orden $orden)
+    {
+        $data = $request->validate([
+            'preparado' => ['required', 'boolean'],
+            'monto_esperado' => ['nullable', 'numeric', 'min:0'],
+        ]);
+
+        $orden = DB::transaction(function () use ($orden, $data) {
+            $orden = Orden::with('pagos')->lockForUpdate()->findOrFail($orden->id);
+            abort_unless($orden->tipo_orden === 'delivery', 422, 'Esta acción solo está disponible para pedidos delivery.');
+            abort_if($orden->estado === 'cancelado', 422, 'No se puede preparar cambio para una orden cancelada.');
+
+            $saldo = round((float) $orden->saldo_pendiente, 2);
+            $preparado = (bool) $data['preparado'];
+            $montoEsperado = $preparado ? round((float) ($data['monto_esperado'] ?? 0), 2) : null;
+
+            if ($preparado) {
+                abort_if($saldo <= 0, 422, 'La orden ya está pagada y no necesita cambio.');
+                abort_if($montoEsperado < $saldo, 422, 'El monto que entregará el cliente no puede ser menor al saldo por cobrar.');
+            }
+
+            $orden->update([
+                'delivery_monto_esperado' => $montoEsperado,
+                'delivery_cambio_preparado' => $preparado,
+                'delivery_cambio_preparado_por' => $preparado ? auth('api')->id() : null,
+                'delivery_cambio_preparado_en' => $preparado ? now() : null,
+            ]);
+
+            return $orden->fresh(['pagos', 'deliveryCambioPreparadoPor:id,name']);
+        });
+
+        event(ServicioFichaActualizadaEvent::desdeOrden($orden, 'cambio_delivery'));
+        $saldo = round((float) $orden->saldo_pendiente, 2);
+        $monto = $orden->delivery_monto_esperado !== null ? round((float) $orden->delivery_monto_esperado, 2) : null;
+
+        return response()->json([
+            'message' => $orden->delivery_cambio_preparado ? 'Cambio preparado.' : 'Preparación de cambio anulada.',
+            'orden_id' => $orden->id,
+            'saldo_pendiente' => $saldo,
+            'delivery_monto_esperado' => $monto,
+            'delivery_cambio_preparado' => (bool) $orden->delivery_cambio_preparado,
+            'delivery_cambio' => $monto !== null ? round(max(0, $monto - $saldo), 2) : null,
+            'delivery_cambio_preparado_por_nombre' => $orden->deliveryCambioPreparadoPor?->name,
+            'delivery_cambio_preparado_en' => $orden->delivery_cambio_preparado_en?->toIso8601String(),
+        ]);
+    }
+
     /**
      * Store a newly created resource in storage.
      * Soporta creación desde POS con cliente_nombre y cliente_telefono
@@ -96,13 +146,14 @@ class OrdenController extends Controller
             'subtotal' => 'required|numeric|min:0',
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'required|numeric|min:0',
-            'observaciones' => 'nullable|string',
+            'observaciones' => 'nullable|string|max:500',
             'reserva_sesion_id' => 'nullable|uuid',
             'items' => 'required|array|min:1',
             'items.*.producto_id' => 'required|exists:productos,id',
             'items.*.cantidad' => 'required|integer|min:1',
             'items.*.precio_unitario' => 'required|numeric|min:0',
             'items.*.nota' => 'nullable|string|max:255',
+            'items.*.combinacion_id' => 'nullable|integer|exists:producto_combinaciones,id',
             'items.*.modificadores' => 'nullable|array',
             'items.*.modificadores.*.modificador_opcion_id' => 'required_with:items.*.modificadores|exists:modificador_opciones,id',
             'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
@@ -116,7 +167,7 @@ class OrdenController extends Controller
         if (!$request->cliente_id && !$request->cliente_nombre) {
             return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
         }
-        $productos = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador'])
+        $productos = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador', 'combinaciones.opciones'])
             ->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
             ->get()
             ->keyBy('id');
@@ -130,6 +181,7 @@ class OrdenController extends Controller
 
             try {
                 $this->validarModificadoresProducto($producto, $item['modificadores'] ?? []);
+                $this->resolverCombinacion($producto, $item['modificadores'] ?? [], $item['combinacion_id'] ?? null);
             } catch (\RuntimeException $e) {
                 return response()->json(['message' => $e->getMessage()], 422);
             }
@@ -138,7 +190,7 @@ class OrdenController extends Controller
         try {
             // Bloqueamos el stock en un orden estable: reserva y venta no pueden
             // confirmar las últimas unidades al mismo tiempo.
-            $productos = Producto::with('estacion')->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
+            $productos = Producto::with(['estacion', 'opciones', 'combinaciones.opciones'])->whereIn('id', collect($request->items)->pluck('producto_id')->unique())
                 ->orderBy('id')->lockForUpdate()->get()->keyBy('id');
             foreach ($request->items as $item) $this->validarPrecioDisponible($productos->get($item['producto_id']), $item);
             $usoOpciones = collect($request->items)->flatMap(function (array $item) {
@@ -192,6 +244,7 @@ class OrdenController extends Controller
             // Crear detalles de la orden (items del carrito)
             foreach ($request->items as $item) {
                 $producto = $productos->get($item['producto_id']);
+                $combinacion = $this->resolverCombinacion($producto, $item['modificadores'] ?? [], $item['combinacion_id'] ?? null);
 
                 if ($producto->maneja_stock && $producto->stock !== null) {
                     $cantidadSolicitada = (int) $item['cantidad'];
@@ -219,6 +272,8 @@ class OrdenController extends Controller
                     $ordenDetalle = OrdenDetalle::create([
                         'orden_id' => $orden->id,
                         'producto_id' => $item['producto_id'],
+                        'producto_combinacion_id' => $combinacion?->id,
+                        'combinacion_nombre' => $combinacion?->nombre,
                         'estacion_id' => $producto->estacion_id,
                         'cantidad' => 1,
                         'precio_unitario' => $item['precio_unitario'],
@@ -258,7 +313,7 @@ class OrdenController extends Controller
 
             return response()->json([
                 'message' => 'Orden creada exitosamente',
-                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
+                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
             ], 201);
         } catch (\RuntimeException|\InvalidArgumentException $e) {
             if (DB::transactionLevel() > 0) DB::rollBack();
@@ -281,7 +336,7 @@ class OrdenController extends Controller
      */
     public function show(string $id)
     {
-        $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
+        $orden = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')->findOrFail($id);
         $this->autorizarMeseroSobrePreorden($orden);
         
         if (!$orden) {
@@ -313,7 +368,7 @@ class OrdenController extends Controller
             'descuento' => 'nullable|numeric|min:0',
             'total' => 'nullable|numeric|min:0',
             'estado' => 'nullable|in:pendiente,preparando,listo,entregado,cancelado',
-            'observaciones' => 'nullable|string',
+            'observaciones' => 'nullable|string|max:500',
             'expected_version' => 'required|integer|min:1',
             'items' => 'nullable|array|min:1',
             'items.*.producto_id' => 'required_with:items|exists:productos,id',
@@ -321,6 +376,7 @@ class OrdenController extends Controller
             'items.*.cantidad' => 'required_with:items|integer|min:1',
             'items.*.precio_unitario' => 'required_with:items|numeric|min:0',
             'items.*.nota' => 'nullable|string|max:255',
+            'items.*.combinacion_id' => 'nullable|integer|exists:producto_combinaciones,id',
             'items.*.modificadores' => 'nullable|array',
             'items.*.modificadores.*.modificador_opcion_id' => 'required_with:items.*.modificadores|exists:modificador_opciones,id',
             'items.*.modificadores.*.precio_extra' => 'required_with:items.*.modificadores|numeric|min:0',
@@ -392,6 +448,13 @@ class OrdenController extends Controller
                 if ($request->has('total')) {
                     $updateData['total'] = $request->total;
                 }
+                if (($request->has('total') && (float) $request->total !== (float) $orden->total)
+                    || ($request->has('tipo_orden') && $request->tipo_orden !== $orden->tipo_orden)) {
+                    $updateData['delivery_monto_esperado'] = null;
+                    $updateData['delivery_cambio_preparado'] = false;
+                    $updateData['delivery_cambio_preparado_por'] = null;
+                    $updateData['delivery_cambio_preparado_en'] = null;
+                }
                 if ($request->has('estado')) {
                     $updateData['estado'] = $request->estado;
                 }
@@ -440,7 +503,7 @@ class OrdenController extends Controller
                 $orden->save();
 
                 return $orden->fresh([
-                    'user', 'cliente', 'mesa', 'pagos', 'detalles.producto.categoria', 'detalles.estacion',
+                    'user', 'cliente', 'mesa', 'pagos', 'detalles.producto.categoria', 'detalles.producto.combinaciones.opciones', 'detalles.estacion',
                     'detalles.opciones.modificadorOpcion',
                 ]);
             });
@@ -688,6 +751,7 @@ class OrdenController extends Controller
     {
         try {
             event($evento);
+            if ($tipo === 'orden_creada') SendGrillOrderPush::dispatch($ordenId)->afterCommit();
         } catch (\Throwable $e) {
             Log::warning('No se pudo publicar la notificación en tiempo real de la orden.', [
                 'tipo' => $tipo,
@@ -761,7 +825,8 @@ class OrdenController extends Controller
 
         foreach ($items as $item) {
             $detalleId = $item['orden_detalle_id'] ?? null;
-            $productoNuevo = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador'])->lockForUpdate()->findOrFail($item['producto_id']);
+            $productoNuevo = Producto::with(['estacion', 'opciones.modificador', 'configuracionesModificador', 'combinaciones.opciones'])->lockForUpdate()->findOrFail($item['producto_id']);
+            $combinacion = $this->resolverCombinacion($productoNuevo, $item['modificadores'] ?? [], $item['combinacion_id'] ?? null);
             $existente = $detalleId ? $detallesExistentes->get($detalleId) : null;
             if (!$existente || $existente->producto_id !== $productoNuevo->id) {
                 $this->validarPrecioDisponible($productoNuevo, $item);
@@ -796,11 +861,15 @@ class OrdenController extends Controller
                 $cambioCantidad = (int) $detalle->cantidad !== $cantidadNueva;
                 $cambioBase = $cambioCantidad
                     || $detalle->producto_id !== $productoNuevo->id
+                    || $detalle->producto_combinacion_id !== $combinacion?->id
+                    || ($detalle->combinacion_nombre ?? null) !== ($combinacion?->nombre ?? null)
                     || (float) $detalle->precio_unitario !== (float) $item['precio_unitario']
                     || ($detalle->nota ?? null) !== ($item['nota'] ?? null);
 
                 $detalle->fill([
                     'producto_id' => $productoNuevo->id,
+                    'producto_combinacion_id' => $combinacion?->id,
+                    'combinacion_nombre' => $combinacion?->nombre,
                     // Si se sustituye el producto, nace un nuevo snapshot de estación.
                     // En cambios de cantidad/precio se mantiene intacto el snapshot original.
                     'estacion_id' => $detalle->producto_id !== $productoNuevo->id
@@ -850,6 +919,8 @@ class OrdenController extends Controller
             $detalle = OrdenDetalle::create([
                 'orden_id' => $orden->id,
                 'producto_id' => $productoNuevo->id,
+                'producto_combinacion_id' => $combinacion?->id,
+                'combinacion_nombre' => $combinacion?->nombre,
                 'estacion_id' => $productoNuevo->estacion_id,
                 'cantidad' => $cantidadNueva,
                 'precio_unitario' => $item['precio_unitario'],
@@ -977,6 +1048,32 @@ class OrdenController extends Controller
         return $actuales !== $nuevas;
     }
 
+    private function resolverCombinacion(Producto $producto, array $modificadores, ?int $combinacionId = null): ?ProductoCombinacion
+    {
+        $producto->loadMissing(['opciones', 'combinaciones.opciones']);
+        $seleccionadas = collect($modificadores)
+            ->pluck('modificador_opcion_id')
+            ->map(fn ($id) => (int) $id)
+            ->values();
+
+        if ($combinacionId !== null) {
+            $solicitada = $producto->combinaciones->firstWhere('id', (int) $combinacionId);
+            if (!$solicitada || !$solicitada->activo) {
+                throw new \RuntimeException('La combinación seleccionada ya no está disponible para ' . $producto->nombre . '.');
+            }
+            return $solicitada;
+        }
+
+        return $producto->combinaciones->first(function (ProductoCombinacion $combinacion) use ($seleccionadas, $producto) {
+            if (!$combinacion->activo) return false;
+            $idsEsperados = $combinacion->opciones->pluck('id')->map(fn ($id) => (int) $id)->sort()->values();
+            $grupos = $combinacion->opciones->pluck('modificador_id')->map(fn ($id) => (int) $id)->unique();
+            $idsDelGrupo = $producto->opciones->whereIn('modificador_id', $grupos)->pluck('id')->map(fn ($id) => (int) $id);
+            $idsActuales = $seleccionadas->filter(fn ($id) => $idsDelGrupo->contains($id))->sort()->values();
+            return $idsEsperados->all() === $idsActuales->all();
+        });
+    }
+
     private function datosDetalle(OrdenDetalle $detalle): array
     {
         $detalle->loadMissing(['producto', 'estacion', 'opciones.modificadorOpcion']);
@@ -985,6 +1082,8 @@ class OrdenController extends Controller
             'detalle_id' => $detalle->id,
             'producto_id' => $detalle->producto_id,
             'producto_nombre' => $detalle->producto?->nombre,
+            'combinacion_id' => $detalle->producto_combinacion_id,
+            'combinacion_nombre' => $detalle->combinacion_nombre,
             'estacion_id' => $detalle->estacion_id,
             'estacion_nombre' => $detalle->estacion?->nombre,
             'cantidad' => (int) $detalle->cantidad,

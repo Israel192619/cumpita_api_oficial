@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Events\CajaActualizadaEvent;
+use App\Events\ServicioFichaActualizadaEvent;
 use App\Models\Orden;
 use App\Models\PagoOrden;
 use App\Models\Caja;
@@ -157,6 +158,12 @@ class PagoOrdenController extends Controller
             $orden->estado_pago = $pagosTotales <= 0
                 ? 'pendiente'
                 : ($pagosTotales < (float) $orden->total ? 'parcial' : 'completado');
+            if ($orden->tipo_orden === 'delivery') {
+                $orden->delivery_monto_esperado = null;
+                $orden->delivery_cambio_preparado = false;
+                $orden->delivery_cambio_preparado_por = null;
+                $orden->delivery_cambio_preparado_en = null;
+            }
             $orden->save();
 
             $saldoPendiente = max(0, (float) $orden->total - (float) $pagosTotales);
@@ -165,6 +172,7 @@ class PagoOrdenController extends Controller
                 (int) ($cajaId ?? 0),
                 $tipoPago === 'devolucion' ? 'devolucion_registrada' : 'pago_registrado'
             ));
+            DB::afterCommit(fn () => event(ServicioFichaActualizadaEvent::desdeOrden($orden, 'pago_delivery')));
 
             return response()->json([
                 'mensaje'         => 'Pago procesado correctamente.',

@@ -33,6 +33,10 @@ class AjusteStockController extends Controller
             'motivo' => 'nullable|string|max:255',
         ]);
 
+        $rol = mb_strtolower(trim($request->user('api')?->role?->nombre ?? ''));
+        $esAdministrador = in_array($rol, ['admin', 'administrador', 'gerente'], true);
+        abort_if(!$esAdministrador && $data['tipo'] !== 'ENTRADA', 403, 'El cajero solo puede registrar entradas de stock desde POS.');
+
         return DB::transaction(function () use ($data) {
             if ($data['tipo'] !== 'CORRECCION' && (int) $data['cantidad'] < 1) {
                 return response()->json(['message' => 'La cantidad debe ser mayor que cero.'], 422);

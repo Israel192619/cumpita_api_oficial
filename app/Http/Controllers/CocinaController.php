@@ -41,6 +41,7 @@ class CocinaController extends Controller
             $preordenesTempranas = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
                 'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
+                'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
                 'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
             ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
@@ -55,6 +56,7 @@ class CocinaController extends Controller
         $ordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
             'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
             'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
+            'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
         ])->operativas()->deFechaOperativa($fecha)
             ->whereIn('estado', ['pendiente', 'preparando', 'listo'])
@@ -111,6 +113,7 @@ class CocinaController extends Controller
 
         $preordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
             'cliente', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
+            'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
             ->whereDate('fecha_programada', $fecha)
@@ -337,6 +340,7 @@ class CocinaController extends Controller
     private function proyectarOrden(Orden $orden, int $estacionId, array $activos): array
     {
         $data = $orden->toArray();
+        $data['observaciones'] = $orden->comentarioGeneral();
         $data['detalles'] = $orden->detalles->map(function (OrdenDetalle $detalle) use ($estacionId, $activos) {
             $estado = $detalle->estadosEstacion->firstWhere('estacion_id', $estacionId);
             if (!$estado || !in_array($estado->estado, $activos, true)) return null;
@@ -346,11 +350,14 @@ class CocinaController extends Controller
                 $bloqueado = $estadoPrincipal && !in_array($estadoPrincipal->estado, self::ESTADOS_LISTOS, true);
             }
             $detalleData = $detalle->toArray();
+            $detalleData['combinacion_nombre'] = $detalle->combinacion?->nombre ?? $detalle->combinacion_nombre;
             $detalleData['estado_cocina'] = $estado->estado;
             $detalleData['estado_estacion_id'] = $estado->id;
             $detalleData['incluye_producto'] = (int) $detalle->estacion_id === $estacionId;
             $detalleData['bloqueado'] = $bloqueado;
             $detalleData['listo_para_atender'] = !$bloqueado && (int) $detalle->estacion_id !== $estacionId;
+            $detalleData['combinacion_ajustes'] = $this->ajustesCombinacion($detalle, $estacionId);
+            $detalleData['combinacion_resumen'] = $this->resumenCombinacion($detalle, $estacionId);
             $detalleData['opciones'] = $detalle->opciones
                 ->filter(fn ($opcion) => (int) ($opcion->modificadorOpcion?->modificador?->estacion_id ?? 0) === $estacionId)
                 ->values()->toArray();
@@ -370,6 +377,7 @@ class CocinaController extends Controller
             'estado_preorden' => $orden->estado_preorden,
             'cliente' => $orden->cliente,
             'mesa' => $orden->mesa,
+            'observaciones' => $orden->comentarioGeneral(),
             'bloqueada' => true,
             'detalles' => $orden->detalles->map(function (OrdenDetalle $detalle) use ($estacionId) {
                 $opciones = $detalle->opciones->filter(
@@ -377,12 +385,65 @@ class CocinaController extends Controller
                 )->values();
                 if ((int) $detalle->estacion_id !== $estacionId && $opciones->isEmpty()) return null;
                 $data = $detalle->toArray();
+                $data['combinacion_nombre'] = $detalle->combinacion?->nombre ?? $detalle->combinacion_nombre;
                 $data['incluye_producto'] = (int) $detalle->estacion_id === $estacionId;
                 $data['bloqueado'] = true;
+                $data['combinacion_ajustes'] = $this->ajustesCombinacion($detalle, $estacionId);
+                $data['combinacion_resumen'] = $this->resumenCombinacion($detalle, $estacionId);
                 $data['opciones'] = $opciones->toArray();
                 return $data;
             })->filter()->values()->all(),
         ];
+    }
+
+    private function ajustesCombinacion(OrdenDetalle $detalle, int $estacionId): array
+    {
+        if (!$detalle->combinacion) return [];
+        $base = $detalle->combinacion->opciones;
+        $idsBase = $base->pluck('id')->map(fn ($id) => (int) $id);
+        $actuales = $detalle->opciones->map(fn ($opcion) => $opcion->modificadorOpcion)->filter();
+        $idsActuales = $actuales->pluck('id')->map(fn ($id) => (int) $id);
+        $agregadas = $actuales
+            ->filter(fn ($opcion) => (int) ($opcion->modificador?->estacion_id ?? 0) === $estacionId)
+            ->reject(fn ($opcion) => $idsBase->contains((int) $opcion->id))->map(fn ($opcion) => [
+            'nombre' => mb_strtolower(trim($opcion->modificador?->nombre ?? '')) === 'guarniciones'
+                ? 'Con ' . $opcion->nombre
+                : $opcion->nombre,
+            'color_fondo' => $opcion->modificador?->color_fondo,
+        ]);
+        $quitadas = $base
+            ->filter(fn ($opcion) => (int) ($opcion->modificador?->estacion_id ?? 0) === $estacionId)
+            ->reject(fn ($opcion) => $idsActuales->contains((int) $opcion->id))->map(fn ($opcion) => [
+            'nombre' => 'Sin ' . $opcion->nombre,
+            'color_fondo' => $opcion->modificador?->color_fondo,
+        ]);
+        return $agregadas->concat($quitadas)->values()->all();
+    }
+
+    private function resumenCombinacion(OrdenDetalle $detalle, int $estacionId): ?string
+    {
+        if (!$detalle->combinacion) return null;
+
+        $esGuarnicion = fn ($opcion) => (int) ($opcion->modificador?->estacion_id ?? 0) === $estacionId
+            && in_array(mb_strtolower(trim($opcion->modificador?->nombre ?? '')), ['guarnicion', 'guarniciones'], true);
+        $base = $detalle->combinacion->opciones->filter($esGuarnicion);
+        $actuales = $detalle->opciones
+            ->map(fn ($opcion) => $opcion->modificadorOpcion)
+            ->filter()
+            ->filter($esGuarnicion);
+        $idsActuales = $actuales->pluck('id')->map(fn ($id) => (int) $id);
+        $cantidadQuitadas = $base->reject(fn ($opcion) => $idsActuales->contains((int) $opcion->id))->count();
+
+        // Con dos o más bajas, leer la composición final es más rápido que
+        // descifrar el nombre de la combinación seguido de varios "Sin ...".
+        if ($cantidadQuitadas < 2) return null;
+
+        $nombres = $actuales->pluck('nombre')->filter()->unique()->values();
+        if ($nombres->isEmpty()) return 'Sin guarniciones';
+        if ($nombres->count() === 1) return (string) $nombres->first();
+
+        $ultima = $nombres->pop();
+        return $nombres->implode(', ') . ' y ' . $ultima;
     }
 
     private function puedePrepararPreordenAnticipada(Orden $orden, EstacionTrabajo $estacion): bool

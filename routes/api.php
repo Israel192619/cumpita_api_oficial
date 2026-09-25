@@ -24,6 +24,7 @@ use App\Http\Controllers\ReporteController;
 use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\SolicitudPreordenController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\WebPushSubscriptionController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -53,6 +54,9 @@ Route::middleware('jwt')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'getUser']);
     Route::post('/me/profile', [AuthController::class, 'updateUser']);
+    Route::get('web-push/public-key', [WebPushSubscriptionController::class, 'publicKey']);
+    Route::post('web-push/subscriptions', [WebPushSubscriptionController::class, 'store']);
+    Route::delete('web-push/subscriptions', [WebPushSubscriptionController::class, 'destroy']);
 
     Route::middleware('access:admin')->group(function () {
         Route::get('dashboard', [DashboardController::class, 'index']);
@@ -66,8 +70,6 @@ Route::middleware('jwt')->group(function () {
         Route::apiResource('categorias', CategoriaController::class)->except(['index', 'show']);
         Route::apiResource('productos', ProductoController::class)->except(['index', 'show']);
         Route::get('ajustes-stock', [AjusteStockController::class, 'index']);
-        Route::post('ajustes-stock', [AjusteStockController::class, 'store']);
-        Route::post('ajustes-stock/lote', [AjusteStockController::class, 'storeBatch']);
         Route::post('ajustes-stock/{ajuste}/revertir', [AjusteStockController::class, 'revertir']);
         // El formulario de edición consulta GET /mesas/{mesa}; no excluir show.
         Route::put('mesas-plano', [MesaController::class, 'actualizarPlano']);
@@ -96,11 +98,14 @@ Route::middleware('jwt')->group(function () {
 
     Route::middleware('access:pos')->group(function () {
         Route::post('productos/{producto}/stock-adjust', [ProductoController::class, 'ajustarStock']);
+        Route::post('ajustes-stock', [AjusteStockController::class, 'store']);
+        Route::post('ajustes-stock/lote', [AjusteStockController::class, 'storeBatch']);
         Route::apiResource('clientes', ClienteController::class)->except(['store']);
         Route::get('ordenes/{orden}/historial', [HistorialCambioOrdenController::class, 'index']);
         Route::get('ordenes/{orden}/cancelacion-info', [OrdenController::class, 'informacionCancelacion']);
         Route::post('ordenes/{orden}/cancelar-venta', [OrdenController::class, 'cancelarVenta']);
         Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
+        Route::patch('ordenes/{orden}/delivery-cambio', [OrdenController::class, 'prepararCambioDelivery']);
         Route::apiResource('ordenes', OrdenController::class)->only(['index', 'destroy']);
         Route::apiResource('pagos-ordenes', PagoOrdenController::class);
     });

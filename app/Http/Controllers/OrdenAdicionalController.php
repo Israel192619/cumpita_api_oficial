@@ -145,6 +145,10 @@ class OrdenAdicionalController extends Controller
             $orden->update([
                 'subtotal' => $subtotal,
                 'total' => $total,
+                'delivery_monto_esperado' => null,
+                'delivery_cambio_preparado' => false,
+                'delivery_cambio_preparado_por' => null,
+                'delivery_cambio_preparado_en' => null,
                 'estado' => in_array($orden->estado, ['listo', 'entregado'], true) ? 'preparando' : $orden->estado,
                 'entregada_en' => null,
                 'estado_pago' => $pagado <= 0 ? 'pendiente' : ($pagado < $total ? 'parcial' : 'completado'),

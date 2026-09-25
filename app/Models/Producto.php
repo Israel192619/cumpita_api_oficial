@@ -60,6 +60,13 @@ class Producto extends Model
         return $this->hasMany(ProductoModificadorConfiguracion::class);
     }
 
+    public function combinaciones()
+    {
+        return $this->hasMany(ProductoCombinacion::class)
+            ->orderBy('orden')
+            ->orderBy('id');
+    }
+
     // Relación dinámica para obtener los modificadores únicos estructurados
     // public function getModificadoresEstructuradosAttribute()
     // {

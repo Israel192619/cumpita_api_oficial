@@ -9,11 +9,13 @@ use App\Models\ReservaStock;
 use App\Models\ReservaStockModificador;
 use App\Models\Producto;
 use App\Models\ProductoModificadorConfiguracion;
+use App\Models\ProductoCombinacion;
 use App\Models\Modificador;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ProductoController extends Controller
 {
@@ -23,7 +25,7 @@ class ProductoController extends Controller
     public function index(Request $request)
     {
         // OPTIMIZACIÓN: Añadimos 'opciones.modificador' al método 'with'
-        $query = Producto::with(['categoria', 'estacion', 'opciones.modificador', 'configuracionesModificador']);
+        $query = Producto::with(['categoria', 'estacion', 'opciones.modificador', 'configuracionesModificador', 'combinaciones.opciones']);
 
         if ($request->filled('categoria_id')) {
             $categoriaId = $request->categoria_id;
@@ -125,8 +127,9 @@ class ProductoController extends Controller
                 $producto->opciones()->sync($opcionesSync);
             }
             $this->sincronizarConfiguraciones($producto, $data['modificadores'] ?? []);
+            $this->sincronizarCombinaciones($producto, $data['combinaciones'] ?? [], collect($data['opciones'] ?? [])->pluck('id')->all());
             return response()->json([
-                'producto' => $producto->load(['categoria', 'estacion']),
+                'producto' => $producto->load(['categoria', 'estacion', 'combinaciones.opciones']),
                 'message'  => 'Producto creado correctamente'
             ], 201);
         });
@@ -137,7 +140,7 @@ class ProductoController extends Controller
      */
     public function show(Producto $producto)
     {
-        $producto->load(['opciones.modificador', 'configuracionesModificador']);
+        $producto->load(['opciones.modificador', 'configuracionesModificador', 'combinaciones.opciones']);
         $producto->modificadores = $producto->modificadores_estructurados;
         $reservasOpciones = ReservaStockModificador::activas()
             ->whereIn('modificador_opcion_id', collect($producto->modificadores)->flatMap(fn ($grupo) => collect($grupo['opciones'] ?? [])->pluck('id')))
@@ -219,6 +222,9 @@ class ProductoController extends Controller
             foreach ($data['opciones'] ?? [] as $opcion) $opcionesSync[$opcion['id']] = ['predeterminado' => $opcion['predeterminado'] ?? false];
             $producto->opciones()->sync($opcionesSync);
             $this->sincronizarConfiguraciones($producto, $data['modificadores'] ?? []);
+            if ($request->boolean('combinaciones_configuradas') || array_key_exists('combinaciones', $data)) {
+                $this->sincronizarCombinaciones($producto, $data['combinaciones'] ?? [], collect($data['opciones'] ?? [])->pluck('id')->all());
+            }
 
             $snapshot = $producto->only(['id', 'nombre', 'precio', 'activo', 'estacion_id', 'categoria_id']);
             DB::afterCommit(function () use ($snapshot) {
@@ -227,7 +233,7 @@ class ProductoController extends Controller
             });
             return response()->json([
                 'message' => 'Producto actualizado correctamente',
-                'producto' => $producto->load(['categoria', 'estacion'])
+                'producto' => $producto->load(['categoria', 'estacion', 'combinaciones.opciones'])
             ]);
         });
     }
@@ -309,6 +315,15 @@ class ProductoController extends Controller
             'modificadores.*.id' => 'required|exists:modificadores,id',
             'modificadores.*.cantidad_requerida' => 'nullable|integer|min:1|max:20',
             'modificadores.*.cantidad_es_maxima' => 'sometimes|boolean',
+            'combinaciones' => 'nullable|array|max:20',
+            'combinaciones_configuradas' => 'sometimes|boolean',
+            'combinaciones.*.id' => 'nullable|integer',
+            'combinaciones.*.nombre' => 'required|string|max:80',
+            'combinaciones.*.activo' => 'sometimes|boolean',
+            'combinaciones.*.predeterminada' => 'sometimes|boolean',
+            'combinaciones.*.orden' => 'nullable|integer|min:0|max:1000',
+            'combinaciones.*.opcion_ids' => 'required|array|min:1',
+            'combinaciones.*.opcion_ids.*' => 'required|integer|exists:modificador_opciones,id',
         ]);
     }
 
@@ -323,6 +338,95 @@ class ProductoController extends Controller
                 'cantidad_es_maxima' => Modificador::find($configuracion['id'])?->usaLimiteMaximo()
                     || (bool) ($configuracion['cantidad_es_maxima'] ?? false),
             ]);
+        }
+    }
+
+    private function sincronizarCombinaciones(Producto $producto, array $combinaciones, array $opcionesPermitidas): void
+    {
+        $permitidas = collect($opcionesPermitidas)->map(fn ($id) => (int) $id);
+        $nombres = collect($combinaciones)->pluck('nombre')->map(fn ($nombre) => mb_strtolower(trim($nombre)));
+        if ($nombres->duplicates()->isNotEmpty()) {
+            throw ValidationException::withMessages(['combinaciones' => 'Los nombres de las combinaciones no pueden repetirse.']);
+        }
+        if (collect($combinaciones)->where('predeterminada', true)->count() > 1) {
+            throw ValidationException::withMessages(['combinaciones' => 'Solo una combinación puede ser la predeterminada.']);
+        }
+
+        $idsConservados = [];
+        $producto->combinaciones()->get()->each(function (ProductoCombinacion $combinacion) {
+            $combinacion->update(['nombre' => '__temporal_' . $combinacion->id]);
+        });
+        $producto->combinaciones()->get()->each(function (ProductoCombinacion $combinacion) {
+            $combinacion->update(['nombre' => '__temporal_' . $combinacion->id]);
+        });
+        foreach ($combinaciones as $indice => $datos) {
+            $opcionIdsRecibidos = collect($datos['opcion_ids'])->map(fn ($id) => (int) $id);
+            if ($opcionIdsRecibidos->unique()->count() !== $opcionIdsRecibidos->count()) {
+                throw ValidationException::withMessages([
+                    "combinaciones.$indice.opcion_ids" => 'Una opción no puede repetirse dentro de la misma combinación.',
+                ]);
+            }
+            $opcionIds = $opcionIdsRecibidos->unique()->values();
+            if ($opcionIds->diff($permitidas)->isNotEmpty()) {
+                throw ValidationException::withMessages([
+                    "combinaciones.$indice.opcion_ids" => 'La combinación contiene una opción que no está asignada al producto.',
+                ]);
+            }
+            $this->validarOpcionesCombinacion($producto, $opcionIds, $indice);
+
+            $combinacion = null;
+            if (!empty($datos['id'])) {
+                $combinacion = $producto->combinaciones()->whereKey($datos['id'])->first();
+                if (!$combinacion) {
+                    throw ValidationException::withMessages([
+                        "combinaciones.$indice.id" => 'La combinación indicada no pertenece al producto.',
+                    ]);
+                }
+            }
+            $combinacion ??= new ProductoCombinacion(['producto_id' => $producto->id]);
+            $combinacion->fill([
+                'nombre' => trim($datos['nombre']),
+                'activo' => (bool) ($datos['activo'] ?? true),
+                'predeterminada' => (bool) ($datos['predeterminada'] ?? false),
+                'orden' => (int) ($datos['orden'] ?? $indice),
+            ]);
+            $producto->combinaciones()->save($combinacion);
+            $combinacion->opciones()->sync($opcionIds->all());
+            $idsConservados[] = $combinacion->id;
+        }
+
+        $producto->combinaciones()->whereNotIn('id', $idsConservados ?: [0])->delete();
+    }
+
+    private function validarOpcionesCombinacion(Producto $producto, $opcionIds, int $indice): void
+    {
+        $producto->unsetRelation('opciones');
+        $producto->unsetRelation('configuracionesModificador');
+        $producto->load(['opciones.modificador', 'configuracionesModificador']);
+        $opcionesCombinacion = $producto->opciones->whereIn('id', $opcionIds);
+        if ($opcionesCombinacion->contains(fn ($opcion) => mb_strtolower(trim($opcion->modificador?->nombre ?? '')) !== 'guarniciones')) {
+            throw ValidationException::withMessages([
+                "combinaciones.$indice.opcion_ids" => 'Las combinaciones rápidas solo pueden contener guarniciones.',
+            ]);
+        }
+        foreach ($producto->opciones->groupBy('modificador_id') as $opciones) {
+            $modificador = $opciones->first()?->modificador;
+            if (!$modificador || !$modificador->activo) continue;
+            if (mb_strtolower(trim($modificador->nombre)) !== 'guarniciones') continue;
+            $idsGrupo = $opciones->where('activo', true)->pluck('id');
+            $cantidad = $opcionIds->filter(fn ($id) => $idsGrupo->contains($id))->count();
+            $configuracion = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id);
+            $requerida = $configuracion?->cantidad_requerida;
+            $esMaxima = $modificador->usaLimiteMaximo() || (bool) $configuracion?->cantidad_es_maxima;
+            $invalida = ($requerida !== null && $esMaxima && $cantidad > (int) $requerida)
+                || ($requerida !== null && !$esMaxima && $cantidad !== (int) $requerida)
+                || ($requerida === null && $modificador->requerido && $cantidad === 0)
+                || ($requerida === null && $modificador->tipo === 'unico' && $cantidad > 1);
+            if ($invalida) {
+                throw ValidationException::withMessages([
+                    "combinaciones.$indice.opcion_ids" => 'La combinación no cumple la cantidad configurada para “' . $modificador->nombre . '”.',
+                ]);
+            }
         }
     }
 

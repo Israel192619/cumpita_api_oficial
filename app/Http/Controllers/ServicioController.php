@@ -36,6 +36,7 @@ class ServicioController extends Controller
             'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
             'detalles.opciones.modificadorOpcion:id,nombre,modificador_id', 'detalles.opciones.modificadorOpcion.modificador:id,color_fondo,estacion_id', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
             'mesero:id,name',
+            'pagos:id,id_orden,monto_pagado', 'deliveryCambioPreparadoPor:id,name',
         ])->operativas()->deFechaOperativa($fecha)
             ->whereNotIn('estado', ['entregado', 'cancelado'])
             ->orderByRaw("CASE WHEN tipo_flujo = 'preorden' AND estado_preorden = 'activada' THEN 0 ELSE 1 END")
@@ -49,6 +50,7 @@ class ServicioController extends Controller
                 'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
                 'detalles.opciones.modificadorOpcion:id,nombre,modificador_id', 'detalles.opciones.modificadorOpcion.modificador:id,color_fondo,estacion_id', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
                 'mesero:id,name',
+                'pagos:id,id_orden,monto_pagado', 'deliveryCambioPreparadoPor:id,name',
             ])->operativas()->deFechaOperativa($fecha)
                 ->where('estado', 'entregado')
                 ->latest('entregada_en')->get();
@@ -61,13 +63,20 @@ class ServicioController extends Controller
             ->whereDate('fecha_programada', now()->toDateString())
             ->orderBy('fecha_programada')->get();
 
+        $fichasEntregadas = $entregadas->map(fn ($orden) => $this->ficha($orden))->values();
+
         return response()->json([
             'disponibles' => $ordenes->whereNull('mesero_id')->map(fn ($orden) => $this->ficha($orden))->values(),
             'mis_fichas' => $esMesero
                 ? $ordenes->where('mesero_id', $usuario->id)->map(fn ($orden) => $this->ficha($orden))->values()
                 : [],
-            'todas_fichas' => $ordenes->concat($entregadas)->map(fn ($orden) => $this->ficha($orden))->values(),
-            'mis_entregadas' => $entregadas->where('mesero_id', $usuario->id)->map(fn ($orden) => $this->ficha($orden))->values(),
+            'todas_fichas' => $ordenes->map(fn ($orden) => $this->ficha($orden))->concat($fichasEntregadas)->values(),
+            'mis_entregadas' => $fichasEntregadas->filter(function ($ficha) use ($usuario) {
+                $entregadores = collect($ficha['entregado_por_ids'] ?? []);
+                return $entregadores->isNotEmpty()
+                    ? $entregadores->contains($usuario->id)
+                    : (int) ($ficha['mesero_id'] ?? 0) === (int) $usuario->id;
+            })->values(),
             'preordenes_programadas' => $preordenes->map(fn ($orden) => $this->fichaPreorden($orden))->values(),
         ]);
     }
@@ -109,7 +118,7 @@ class ServicioController extends Controller
             $colaboracion->registrar($detalle, $mesero->id, 'entregar', $estadoAnterior);
             return $detalle->orden;
         });
-        $this->notificar($orden, 'colaboracion');
+        $this->notificarTrasRespuesta($orden, 'colaboracion');
         return response()->json(['message' => 'Producto confirmado.', 'detalle_id' => $detalle->id]);
     }
 
@@ -158,7 +167,7 @@ class ServicioController extends Controller
             return [$orden, $listo];
         });
 
-        $this->notificar($orden, 'colaboracion');
+        $this->notificarTrasRespuesta($orden, 'colaboracion');
         return response()->json([
             'message' => 'Producto devuelto a su estado anterior.',
             'detalle_id' => $detalle->id,
@@ -305,7 +314,7 @@ class ServicioController extends Controller
             $orden->update(['mesa_id' => $data['mesa_id'], 'version' => ($orden->version ?? 0) + 1]);
             return $orden->load('mesa');
         });
-        $this->notificar($orden, 'mesa');
+        $this->notificarTrasRespuesta($orden, 'mesa');
         return response()->json(['orden_id' => $orden->id, 'mesa' => $orden->mesa->numero,
             'message' => 'Mesa actualizada.']);
     }
@@ -325,7 +334,7 @@ class ServicioController extends Controller
             return $orden;
         });
 
-        $this->notificar($orden, 'cubiertos');
+        $this->notificarTrasRespuesta($orden, 'cubiertos');
 
         return response()->json([
             'message' => $orden->cubiertos_entregados ? 'Cubiertos marcados como entregados.' : 'Cubiertos marcados como pendientes.',
@@ -382,11 +391,21 @@ class ServicioController extends Controller
                 ])->filter(fn ($opcion) => $opcion['nombre'])->values(),
             ];
         })->values();
+        $entregadores = $detalles
+            ->filter(fn ($detalle) => !empty($detalle['entregado_por_id']))
+            ->map(fn ($detalle) => ['id' => (int) $detalle['entregado_por_id'], 'nombre' => $detalle['entregado_por']])
+            ->unique('id')->values();
+        $esDelivery = $orden->tipo_orden === 'delivery';
+        $saldo = $esDelivery ? round((float) $orden->saldo_pendiente, 2) : null;
+        $montoEsperado = $esDelivery && $orden->delivery_monto_esperado !== null
+            ? round((float) $orden->delivery_monto_esperado, 2)
+            : null;
         return [
             'id' => $orden->id, 'numero_orden' => $orden->numero_orden, 'created_at' => $orden->created_at,
             'entregada_en' => $orden->entregada_en?->toIso8601String(),
             'cubiertos_entregados' => (bool) $orden->cubiertos_entregados,
             'mesa' => $orden->mesa?->numero, 'cliente' => $orden->cliente?->nombre, 'cliente_id' => $orden->cliente_id,
+            'observaciones' => $orden->comentarioGeneral(),
             'ubicacion_entrega' => $this->ubicacionEntrega($orden),
             'tipo_orden' => $orden->tipo_orden,
             'tipo_flujo' => $orden->tipo_flujo,
@@ -395,6 +414,15 @@ class ServicioController extends Controller
             'hora' => ($orden->fecha_orden ?? $orden->created_at)?->format('H:i'),
             'tiempo_espera_minutos' => (int) ($orden->fecha_orden ?? $orden->created_at)?->diffInMinutes(now()),
             'mesero' => $orden->mesero?->name, 'mesero_id' => $orden->mesero_id, 'estado' => $orden->estado, 'detalles' => $detalles,
+            'entregado_por_ids' => $entregadores->pluck('id'),
+            'entregado_por_nombres' => $entregadores->pluck('nombre'),
+            'total' => $esDelivery ? round((float) $orden->total, 2) : null,
+            'saldo_pendiente' => $saldo,
+            'delivery_monto_esperado' => $montoEsperado,
+            'delivery_cambio_preparado' => $esDelivery && (bool) $orden->delivery_cambio_preparado,
+            'delivery_cambio' => $montoEsperado !== null && $saldo !== null ? round(max(0, $montoEsperado - $saldo), 2) : null,
+            'delivery_cambio_preparado_por' => $orden->deliveryCambioPreparadoPor?->name,
+            'delivery_cambio_preparado_en' => $orden->delivery_cambio_preparado_en?->toIso8601String(),
             'listos' => $detalles->where('listo', true)->count(), 'total_items' => $detalles->count(),
             'todo_listo' => $detalles->isNotEmpty() && $detalles->every(fn ($detalle) => $detalle['listo']),
         ];
@@ -408,6 +436,7 @@ class ServicioController extends Controller
             'mesa' => $orden->mesa?->numero,
             'cliente' => $orden->cliente?->nombre,
             'cliente_id' => $orden->cliente_id,
+            'observaciones' => $orden->comentarioGeneral(),
             'ubicacion_entrega' => $this->ubicacionEntrega($orden),
             'tipo_orden' => $orden->tipo_orden,
             'fecha_programada' => $orden->fecha_programada,
@@ -504,6 +533,16 @@ class ServicioController extends Controller
         } catch (\Throwable) {
             return false;
         }
+    }
+
+    private function notificarTrasRespuesta(Orden $orden, string $accion): void
+    {
+        if (app()->runningUnitTests()) {
+            $this->notificar($orden, $accion);
+            return;
+        }
+
+        app()->terminating(fn () => $this->notificar($orden, $accion));
     }
 
     private function notificar(Orden $orden, string $accion = 'actualizada'): void

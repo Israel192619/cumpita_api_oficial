@@ -59,6 +59,15 @@ class ServicioControllerTest extends TestCase
             $table->timestamp('preorden_activada_en')->nullable();
             $table->timestamp('tomada_en')->nullable(); $table->timestamp('entregada_en')->nullable(); $table->timestamps();
             $table->boolean('cubiertos_entregados')->default(false);
+            $table->decimal('total', 10, 2)->default(0); $table->string('tipo_orden')->default('dine-in');
+            $table->decimal('delivery_monto_esperado', 10, 2)->nullable();
+            $table->boolean('delivery_cambio_preparado')->default(false);
+            $table->unsignedBigInteger('delivery_cambio_preparado_por')->nullable();
+            $table->timestamp('delivery_cambio_preparado_en')->nullable();
+        });
+        Schema::create('pagos_ordenes', function (Blueprint $table) {
+            $table->id(); $table->unsignedBigInteger('id_orden'); $table->decimal('monto_pagado', 10, 2)->default(0);
+            $table->timestamps();
         });
         Schema::create('productos', function (Blueprint $table) {
             $table->id(); $table->unsignedBigInteger('estacion_id')->nullable(); $table->string('nombre'); $table->timestamps();
@@ -101,7 +110,7 @@ class ServicioControllerTest extends TestCase
     protected function tearDown(): void
     {
         foreach (['historial_cambios_orden', 'orden_detalle_estaciones', 'orden_detalle_opciones', 'orden_detalles', 'modificador_opciones',
-            'modificadores', 'productos', 'ordenes', 'perfil_usuarios', 'users', 'estaciones_trabajo', 'roles'] as $table) {
+            'modificadores', 'productos', 'pagos_ordenes', 'ordenes', 'perfil_usuarios', 'users', 'estaciones_trabajo', 'roles'] as $table) {
             Schema::dropIfExists($table);
         }
         parent::tearDown();
@@ -580,6 +589,18 @@ class ServicioControllerTest extends TestCase
             $table->id(); $table->unsignedBigInteger('producto_id'); $table->unsignedBigInteger('modificador_id');
             $table->integer('cantidad_requerida');
         });
+        Schema::create('producto_combinaciones', function (Blueprint $table) {
+            $table->id(); $table->unsignedBigInteger('producto_id'); $table->string('nombre');
+            $table->boolean('activo')->default(true); $table->boolean('predeterminada')->default(false);
+            $table->unsignedSmallInteger('orden')->default(0); $table->timestamps();
+        });
+        Schema::create('producto_combinacion_opciones', function (Blueprint $table) {
+            $table->id(); $table->unsignedBigInteger('producto_combinacion_id'); $table->unsignedBigInteger('modificador_opcion_id');
+        });
+        Schema::table('orden_detalles', function (Blueprint $table) {
+            $table->unsignedBigInteger('producto_combinacion_id')->nullable();
+            $table->string('combinacion_nombre')->nullable();
+        });
         try {
             [$mesero] = $this->meseros();
             $orden = Orden::create(['user_id' => $mesero->id, 'numero_orden' => 905, 'estado' => 'listo']);
@@ -597,6 +618,8 @@ class ServicioControllerTest extends TestCase
             $this->assertSame('servido', $detalle->fresh()->estado_cocina);
             $this->assertDatabaseCount('orden_detalles', 1);
         } finally {
+            Schema::dropIfExists('producto_combinacion_opciones');
+            Schema::dropIfExists('producto_combinaciones');
             Schema::dropIfExists('producto_modificador_configuraciones');
             Schema::dropIfExists('producto_opciones');
         }

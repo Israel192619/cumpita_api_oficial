@@ -19,6 +19,7 @@ class ServicioColaboracionService
             'llevando_por_id' => $llevando ? $ultimo->user_id : null,
             'llevando_por' => $llevando ? ($ultimo->user?->name ?? 'Mesero') : null,
             'entregado_por' => $entregado ? ($ultimo->user?->name ?? 'Mesero') : null,
+            'entregado_por_id' => $entregado ? $ultimo->user_id : null,
             'agregado_por' => $agregado?->user?->name,
             'servido' => $entregado || $detalle->estado_cocina === 'servido',
         ];
