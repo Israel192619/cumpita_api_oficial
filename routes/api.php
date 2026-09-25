@@ -155,6 +155,7 @@ Route::middleware('jwt')->group(function () {
         Route::get('servicio/fichas', [ServicioController::class, 'index']);
         Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
         Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);
+        Route::post('servicio/fichas/{orden}/apoyar', [ServicioController::class, 'apoyar']);
         Route::post('servicio/fichas/{orden}/liberar', [ServicioController::class, 'liberar']);
         Route::post('servicio/detalles/{detalle}/colaborar', [ServicioController::class, 'colaborar']);
         Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);

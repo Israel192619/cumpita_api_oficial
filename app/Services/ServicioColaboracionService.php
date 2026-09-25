@@ -12,12 +12,16 @@ class ServicioColaboracionService
         $historial = $detalle->historialCambios->sortByDesc('id');
         $ultimo = $historial->first(fn ($cambio) => ($cambio->datos_nuevo['origen'] ?? null) === 'colaboracion_servicio');
         $agregado = $historial->first(fn ($cambio) => ($cambio->datos_nuevo['origen'] ?? null) === 'servicio_mesero');
-        $llevando = ($ultimo?->datos_nuevo['accion'] ?? null) === 'llevar';
+        $accion = $ultimo?->datos_nuevo['accion'] ?? null;
+        $apoyoVencido = $accion === 'llevar_apoyo' && $ultimo?->created_at?->lt(now()->subMinutes(2));
+        $llevando = in_array($accion, ['llevar', 'llevar_apoyo'], true) && !$apoyoVencido;
         $entregado = ($ultimo?->datos_nuevo['accion'] ?? null) === 'entregar';
 
         return [
             'llevando_por_id' => $llevando ? $ultimo->user_id : null,
             'llevando_por' => $llevando ? ($ultimo->user?->name ?? 'Mesero') : null,
+            'llevando_hasta' => $llevando && $accion === 'llevar_apoyo' ? $ultimo->created_at->copy()->addMinutes(2)->toIso8601String() : null,
+            'es_apoyo' => $llevando && $accion === 'llevar_apoyo',
             'entregado_por' => $entregado ? ($ultimo->user?->name ?? 'Mesero') : null,
             'entregado_por_id' => $entregado ? $ultimo->user_id : null,
             'agregado_por' => $agregado?->user?->name,

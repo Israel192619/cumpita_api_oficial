@@ -21,6 +21,7 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 class ServicioController extends Controller
 {
     private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
+    private const MAX_FICHAS_POR_MESERO = 2;
 
     public function index(Request $request, KdsEstacionService $kds)
     {
@@ -85,15 +86,89 @@ class ServicioController extends Controller
     {
         $mesero = $this->meseroServicio();
         $orden = DB::transaction(function () use ($orden, $mesero) {
+            // Bloquear al usuario primero serializa dos tomas simultáneas de fichas distintas.
+            DB::table('users')->where('id', $mesero->id)->lockForUpdate()->first();
             $orden = Orden::lockForUpdate()->findOrFail($orden->id);
             $this->asegurarOrdenOperativa($orden);
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya no está disponible.');
             abort_if($orden->mesero_id && $orden->mesero_id !== $mesero->id, 409, 'Otro mesero ya tomó esta ficha.');
-            if (!$orden->mesero_id) $orden->update(['mesero_id' => $mesero->id, 'tomada_en' => now()]);
+            if ($orden->mesero_id === $mesero->id) return $orden;
+            $detalleEnCamino = OrdenDetalle::with('historialCambios.user')->where('orden_id', $orden->id)->get()
+                ->first(fn ($detalle) => app(ServicioColaboracionService::class)->estado($detalle)['es_apoyo']);
+            if ($detalleEnCamino) {
+                $estadoApoyo = app(ServicioColaboracionService::class)->estado($detalleEnCamino);
+                abort(409, ($estadoApoyo['llevando_por'] ?? 'Otro mesero').' ya está llevando esta ficha como apoyo.');
+            }
+
+            $activas = Orden::where('mesero_id', $mesero->id)
+                ->whereNotIn('estado', ['entregado', 'cancelado'])
+                ->lockForUpdate()->get(['id'])->count();
+            abort_if($activas >= self::MAX_FICHAS_POR_MESERO, 422, 'Ya tienes 2 fichas activas. Termina o libera una antes de tomar otra.');
+            $orden->update(['mesero_id' => $mesero->id, 'tomada_en' => now()]);
             return $orden;
         });
         $this->notificar($orden, 'tomada');
         return response()->json(['message' => 'Ficha tomada.', 'orden_id' => $orden->id]);
+    }
+
+    public function apoyar(Request $request, Orden $orden, KdsEstacionService $kds)
+    {
+        $mesero = $this->meseroServicio();
+        $accion = $request->validate(['accion' => ['required', 'in:llevar,cancelar,entregar']])['accion'];
+        $orden = DB::transaction(function () use ($orden, $mesero, $accion, $kds) {
+            $orden = Orden::lockForUpdate()->findOrFail($orden->id);
+            $this->asegurarOrdenOperativa($orden);
+            abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
+            abort_if($accion === 'llevar' && $orden->mesero_id, 409, 'La ficha ya tiene un mesero responsable.');
+
+            $cargar = fn () => OrdenDetalle::with(['estadosEstacion', 'historialCambios.user'])
+                ->where('orden_id', $orden->id)->orderBy('id')->lockForUpdate()->get();
+            $detalles = $cargar();
+            abort_if($detalles->isEmpty(), 422, 'La ficha no tiene productos para entregar.');
+            $kds->sincronizar($detalles);
+            $detalles = $cargar();
+            $colaboracion = app(ServicioColaboracionService::class);
+            $pendientes = $detalles->filter(fn ($detalle) => !$colaboracion->estado($detalle)['servido']);
+            abort_if($pendientes->isEmpty(), 409, 'Esta ficha ya fue entregada.');
+
+            if ($accion === 'llevar') {
+                foreach ($pendientes as $detalle) {
+                    $estado = $colaboracion->estado($detalle);
+                    abort_if($estado['llevando_por_id'] && $estado['llevando_por_id'] !== $mesero->id, 409, ($estado['llevando_por'] ?? 'Otro mesero').' ya está llevando esta ficha.');
+                    $listo = $detalle->estadosEstacion->isNotEmpty()
+                        && $detalle->estadosEstacion->every(fn ($item) => in_array($item->estado, self::ESTADOS_LISTOS, true));
+                    abort_unless($listo, 422, 'El pedido todavía no está completamente listo.');
+                }
+                foreach ($pendientes as $detalle) {
+                    if (!$colaboracion->estado($detalle)['llevando_por_id']) {
+                        $colaboracion->registrar($detalle, $mesero->id, 'llevar_apoyo');
+                    }
+                }
+            } elseif ($accion === 'cancelar') {
+                $propios = $pendientes->filter(fn ($detalle) => $colaboracion->estado($detalle)['llevando_por_id'] === $mesero->id);
+                abort_if($propios->isEmpty(), 409, 'Esta ficha ya no está reservada por ti.');
+                foreach ($propios as $detalle) $colaboracion->registrar($detalle, $mesero->id, 'cancelar');
+            } else {
+                foreach ($pendientes as $detalle) {
+                    abort_unless($colaboracion->estado($detalle)['llevando_por_id'] === $mesero->id, 409, 'Otro mesero tomó esta ficha o la reserva venció.');
+                }
+                foreach ($pendientes as $detalle) {
+                    $estadoAnterior = $this->estadoAnteriorEntrega($detalle);
+                    $detalle->estadosEstacion()->update(['estado' => 'servido', 'fecha_servido' => now()]);
+                    $detalle->update(['estado_cocina' => 'servido', 'fecha_servido' => now()]);
+                    $colaboracion->registrar($detalle, $mesero->id, 'entregar', $estadoAnterior);
+                }
+                $orden->update(['estado' => 'entregado', 'entregada_en' => now(), 'cubiertos_entregados' => true]);
+            }
+            return $orden;
+        });
+
+        $this->notificarTrasRespuesta($orden, $accion === 'entregar' ? 'entregada' : 'apoyo');
+        return response()->json([
+            'message' => $accion === 'llevar' ? 'Ficha reservada para apoyo.' : ($accion === 'cancelar' ? 'Apoyo liberado.' : 'Pedido entregado.'),
+            'orden_id' => $orden->id,
+            'accion' => $accion,
+        ]);
     }
 
     public function confirmarDetalle(OrdenDetalle $detalle, KdsEstacionService $kds)
@@ -395,6 +470,15 @@ class ServicioController extends Controller
             ->filter(fn ($detalle) => !empty($detalle['entregado_por_id']))
             ->map(fn ($detalle) => ['id' => (int) $detalle['entregado_por_id'], 'nombre' => $detalle['entregado_por']])
             ->unique('id')->values();
+        $pendientesApoyo = $detalles->filter(fn ($detalle) => empty($detalle['servido']));
+        $transportistasApoyo = $pendientesApoyo->pluck('llevando_por_id')->filter()->unique()->values();
+        $esApoyoCompleto = $pendientesApoyo->isNotEmpty()
+            && $transportistasApoyo->count() === 1
+            && $pendientesApoyo->every(fn ($detalle) => !empty($detalle['es_apoyo']))
+            && $pendientesApoyo->every(fn ($detalle) => (int) ($detalle['llevando_por_id'] ?? 0) === (int) $transportistasApoyo->first());
+        $apoyoPorId = $esApoyoCompleto ? (int) $transportistasApoyo->first() : null;
+        $apoyoPor = $esApoyoCompleto ? $pendientesApoyo->first()['llevando_por'] : null;
+        $apoyoHasta = $esApoyoCompleto ? $pendientesApoyo->first()['llevando_hasta'] : null;
         $esDelivery = $orden->tipo_orden === 'delivery';
         $saldo = $esDelivery ? round((float) $orden->saldo_pendiente, 2) : null;
         $montoEsperado = $esDelivery && $orden->delivery_monto_esperado !== null
@@ -414,6 +498,9 @@ class ServicioController extends Controller
             'hora' => ($orden->fecha_orden ?? $orden->created_at)?->format('H:i'),
             'tiempo_espera_minutos' => (int) ($orden->fecha_orden ?? $orden->created_at)?->diffInMinutes(now()),
             'mesero' => $orden->mesero?->name, 'mesero_id' => $orden->mesero_id, 'estado' => $orden->estado, 'detalles' => $detalles,
+            'apoyo_por_id' => $apoyoPorId,
+            'apoyo_por' => $apoyoPor,
+            'apoyo_hasta' => $apoyoHasta,
             'entregado_por_ids' => $entregadores->pluck('id'),
             'entregado_por_nombres' => $entregadores->pluck('nombre'),
             'total' => $esDelivery ? round((float) $orden->total, 2) : null,

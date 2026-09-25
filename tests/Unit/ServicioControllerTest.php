@@ -137,6 +137,73 @@ class ServicioControllerTest extends TestCase
         $this->assertSame($meseroA->id, $orden->fresh()->mesero_id);
     }
 
+    public function test_mesero_no_puede_tomar_mas_de_dos_fichas_activas(): void
+    {
+        [$mesero] = $this->meseros();
+        $controller = new ServicioController();
+        $this->autenticarServicio($mesero);
+        $ordenes = collect([151, 152, 153])->map(fn ($numero) => Orden::create([
+            'user_id' => $mesero->id, 'numero_orden' => $numero, 'estado' => 'pendiente',
+        ]));
+
+        $controller->tomar($ordenes[0]);
+        $controller->tomar($ordenes[1]);
+        try {
+            $controller->tomar($ordenes[2]);
+            $this->fail('La tercera ficha debía ser rechazada.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
+
+        $this->assertNull($ordenes[2]->fresh()->mesero_id);
+    }
+
+    public function test_apoyo_reserva_una_ficha_completa_para_un_solo_mesero_aunque_tenga_dos(): void
+    {
+        [$meseroA, $meseroB] = $this->meseros();
+        Orden::create(['user_id' => $meseroA->id, 'mesero_id' => $meseroA->id, 'numero_orden' => 154, 'estado' => 'preparando']);
+        Orden::create(['user_id' => $meseroA->id, 'mesero_id' => $meseroA->id, 'numero_orden' => 155, 'estado' => 'preparando']);
+        $orden = Orden::create(['user_id' => $meseroB->id, 'numero_orden' => 156, 'estado' => 'listo']);
+        $producto = Producto::create(['nombre' => 'Pescado', 'estacion_id' => 1]);
+        $detalle = OrdenDetalle::create([
+            'orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1,
+            'estado_cocina' => 'listo_para_recoger',
+        ]);
+        $detalle->estadosEstacion()->update(['estado' => 'listo_para_recoger']);
+        $controller = new ServicioController();
+        $kds = app(KdsEstacionService::class);
+        $request = fn ($accion) => Request::create('/', 'POST', ['accion' => $accion]);
+
+        $this->autenticarServicio($meseroA);
+        $this->assertSame(200, $controller->apoyar($request('llevar'), $orden, $kds)->status());
+        $this->assertSame($meseroA->id, app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh())['llevando_por_id']);
+
+        $this->autenticarServicio($meseroB);
+        $tablero = $controller->index(Request::create('/', 'GET'), $kds)->getData(true);
+        $fichaApoyo = collect($tablero['disponibles'])->firstWhere('id', $orden->id);
+        $this->assertSame($meseroA->id, $fichaApoyo['apoyo_por_id']);
+        $this->assertSame($meseroA->name, $fichaApoyo['apoyo_por']);
+        $this->assertNotEmpty($fichaApoyo['apoyo_hasta']);
+        try {
+            $controller->tomar($orden->fresh());
+            $this->fail('Una ficha reservada como apoyo no puede tomarse como ficha normal.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(409, $error->getStatusCode());
+        }
+        try {
+            $controller->apoyar($request('llevar'), $orden->fresh(), $kds);
+            $this->fail('La ficha de apoyo no puede reservarse dos veces.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(409, $error->getStatusCode());
+        }
+
+        $this->autenticarServicio($meseroA);
+        $controller->apoyar($request('entregar'), $orden->fresh(), $kds);
+        $this->assertSame('entregado', $orden->fresh()->estado);
+        $this->assertTrue((bool) $orden->fresh()->cubiertos_entregados);
+        $this->assertTrue(app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh())['servido']);
+    }
+
     public function test_mesero_con_jwt_principal_entra_y_trabaja_sin_pin(): void
     {
         [$mesero] = $this->meseros();
