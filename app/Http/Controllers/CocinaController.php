@@ -436,12 +436,13 @@ class CocinaController extends Controller
             ->map(fn ($opcion) => $opcion->modificadorOpcion)
             ->filter()
             ->filter($esGuarnicion);
+        $idsBase = $base->pluck('id')->map(fn ($id) => (int) $id)->sort()->values();
         $idsActuales = $actuales->pluck('id')->map(fn ($id) => (int) $id);
-        $cantidadQuitadas = $base->reject(fn ($opcion) => $idsActuales->contains((int) $opcion->id))->count();
 
-        // Con dos o más bajas, leer la composición final es más rápido que
-        // descifrar el nombre de la combinación seguido de varios "Sin ...".
-        if ($cantidadQuitadas < 2) return null;
+        // La combinación conserva su nombre (NORMAL/ALTERNATIVO) únicamente
+        // cuando sus guarniciones no cambiaron. Ante cualquier ajuste se
+        // muestra la composición final para que Cocina no tenga que calcularla.
+        if ($idsBase->all() === $idsActuales->sort()->values()->all()) return null;
 
         $nombres = $actuales->pluck('nombre')->filter()->unique()->values();
         if ($nombres->isEmpty()) return 'Sin guarniciones';

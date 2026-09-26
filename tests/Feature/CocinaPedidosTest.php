@@ -53,6 +53,7 @@ class CocinaPedidosTest extends TestCase
         $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion=COCINA')
             ->assertOk()->assertJsonPath('ordenes.0.observaciones', 'Entregar todo junto')
             ->assertJsonPath('ordenes.0.detalles.0.combinacion_nombre', 'Guarnición ligera')
+            ->assertJsonPath('ordenes.0.detalles.0.combinacion_resumen', 'Arroz batido y Mote')
             ->assertJsonPath('ordenes.0.detalles.0.combinacion_ajustes.0.nombre', 'Con Mote')
             ->assertJsonPath('ordenes.0.detalles.0.combinacion_ajustes.1.nombre', 'Sin Ensalada')
             ->assertJsonCount(2, 'ordenes.0.detalles.0.opciones');
