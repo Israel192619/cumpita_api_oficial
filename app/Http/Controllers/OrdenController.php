@@ -26,6 +26,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Database\QueryException;
 
 class OrdenController extends Controller
 {
@@ -148,6 +149,14 @@ class OrdenController extends Controller
             'total' => 'required|numeric|min:0',
             'observaciones' => 'nullable|string|max:500',
             'reserva_sesion_id' => 'nullable|uuid',
+            'operacion_cliente_id' => 'nullable|uuid',
+            'usuario_origen_id' => 'nullable|integer|exists:users,id',
+            'caja_id' => 'nullable|integer|exists:cajas,id',
+            'venta_sin_conexion' => 'nullable|boolean',
+            'pagos' => 'nullable|array|max:10',
+            'pagos.*.metodo_pago' => 'required_with:pagos|in:efectivo,qr',
+            'pagos.*.monto_aplicado' => 'required_with:pagos|numeric|min:0.01',
+            'pagos.*.monto_recibido' => 'nullable|numeric|min:0.01',
             'items' => 'required|array|min:1',
             'items.*.producto_id' => 'required|exists:productos,id',
             'items.*.cantidad' => 'required|integer|min:1',
@@ -160,6 +169,13 @@ class OrdenController extends Controller
         ]);
         if ($validator->fails()) {
             return response()->json(['errors' => $validator->errors()], 422);
+        }
+        if ($request->filled('usuario_origen_id') && (int) $request->usuario_origen_id !== (int) auth('api')->id()) {
+            return response()->json(['message' => 'Esta venta pendiente pertenece a otro cajero.'], 403);
+        }
+        if ($request->filled('operacion_cliente_id')) {
+            $existente = Orden::where('operacion_cliente_id', $request->operacion_cliente_id)->first();
+            if ($existente) return $this->respuestaVentaCreada($existente, true);
         }
         if ($this->esMesero()) {
             abort_unless($request->input('tipo_flujo') === 'preorden', 403, 'El mesero solamente puede registrar preórdenes.');
@@ -225,6 +241,7 @@ class OrdenController extends Controller
 
             // Crear la orden
             $orden = Orden::create([
+                'operacion_cliente_id' => $request->input('operacion_cliente_id'),
                 'user_id' => $userActual->id,
                 'cliente_id' => $clienteId,
                 'mesa_id' => ($request->tipo_orden ?? 'dine-in') === 'dine-in' ? $request->mesa_id : null,
@@ -303,7 +320,18 @@ class OrdenController extends Controller
                 ReservaStockModificador::where('sesion_id', $request->reserva_sesion_id)->delete();
             }
 
+            $cajaPagoId = $this->registrarPagosIniciales(
+                $orden,
+                $request->input('pagos', []),
+                $request->integer('caja_id') ?: null,
+                $request->boolean('venta_sin_conexion')
+            );
+
             DB::commit();
+
+            if ($cajaPagoId !== null) {
+                $this->emitirEventoSeguro(new CajaActualizadaEvent($cajaPagoId, 'venta_registrada'), 'venta_registrada', $orden->id);
+            }
 
             if ($orden->esPreordenProgramada()) {
                 $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_creada'), 'preorden_creada', $orden->id);
@@ -311,24 +339,92 @@ class OrdenController extends Controller
                 $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
             }
 
-            return response()->json([
-                'message' => 'Orden creada exitosamente',
-                'orden' => $orden->load('user', 'cliente', 'mesa', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion')
-            ], 201);
+            return $this->respuestaVentaCreada($orden, false);
         } catch (\RuntimeException|\InvalidArgumentException $e) {
             if (DB::transactionLevel() > 0) DB::rollBack();
             return response()->json(['message' => $e->getMessage()], 422);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpExceptionInterface $e) {
             return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
-        } catch (\Exception $e) {
+        } catch (QueryException $e) {
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
             }
+            if ($request->filled('operacion_cliente_id') && (string) $e->getCode() === '23000') {
+                $existente = Orden::where('operacion_cliente_id', $request->operacion_cliente_id)->first();
+                if ($existente) return $this->respuestaVentaCreada($existente, true);
+            }
+            return response()->json(['message' => 'Error al crear la orden', 'error' => $e->getMessage()], 500);
+        } catch (\Exception $e) {
+            if (DB::transactionLevel() > 0) DB::rollBack();
             return response()->json([
                 'message' => 'Error al crear la orden',
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    private function registrarPagosIniciales(Orden $orden, array $pagos, ?int $cajaSolicitadaId, bool $ventaSinConexion): ?int
+    {
+        if ($pagos === []) return null;
+
+        $partes = collect($pagos)->map(function (array $pago) {
+            $aplicado = round((float) $pago['monto_aplicado'], 2);
+            $recibido = $pago['metodo_pago'] === 'qr'
+                ? $aplicado
+                : round((float) ($pago['monto_recibido'] ?? $aplicado), 2);
+            if ($recibido < $aplicado) throw new \RuntimeException('En efectivo, el monto recibido no puede ser menor al monto aplicado.');
+            return ['metodo_pago' => $pago['metodo_pago'], 'monto_aplicado' => $aplicado, 'monto_recibido' => $recibido];
+        });
+
+        $totalAplicado = round((float) $partes->sum('monto_aplicado'), 2);
+        if ($totalAplicado > round((float) $orden->total, 2)) {
+            throw new \RuntimeException('Los pagos superan el total de la orden.');
+        }
+
+        $cajaId = null;
+        if ($partes->contains(fn (array $pago) => $pago['metodo_pago'] === 'efectivo')) {
+            $usuarioId = (int) auth('api')->id();
+            $caja = Caja::query()
+                ->when($cajaSolicitadaId, fn ($query) => $query->whereKey($cajaSolicitadaId))
+                ->where(function ($query) use ($usuarioId) {
+                    $query->where('user_id', $usuarioId)
+                        ->orWhereHas('usuarios', fn ($usuarios) => $usuarios->where('users.id', $usuarioId));
+                })
+                ->when(!$ventaSinConexion, fn ($query) => $query->where('estado', 'abierta'))
+                ->lockForUpdate()
+                ->first();
+            if (!$caja) throw new \RuntimeException('No tienes acceso a la caja usada para registrar el pago en efectivo.');
+            $cajaId = $caja->id;
+        }
+
+        foreach ($partes as $parte) {
+            PagoOrden::create([
+                'id_orden' => $orden->id,
+                'caja_id' => $parte['metodo_pago'] === 'efectivo' ? $cajaId : null,
+                'user_id' => auth('api')->id(),
+                'monto_recibido' => $parte['monto_recibido'],
+                'monto_pagado' => $parte['monto_aplicado'],
+                'cambio_devuelto' => round($parte['monto_recibido'] - $parte['monto_aplicado'], 2),
+                'metodo_pago' => $parte['metodo_pago'],
+                'tipo_pago' => 'pago',
+                'fecha_pago' => now(),
+            ]);
+        }
+
+        $orden->estado_pago = $totalAplicado <= 0
+            ? 'pendiente'
+            : ($totalAplicado < (float) $orden->total ? 'parcial' : 'completado');
+        $orden->save();
+        return $cajaId;
+    }
+
+    private function respuestaVentaCreada(Orden $orden, bool $duplicada)
+    {
+        return response()->json([
+            'message' => $duplicada ? 'La venta ya había sido registrada.' : 'Orden creada exitosamente',
+            'duplicada' => $duplicada,
+            'orden' => $orden->load('user', 'cliente', 'mesa', 'pagos', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion'),
+        ], $duplicada ? 200 : 201);
     }
 
     /**
