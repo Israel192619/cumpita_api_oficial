@@ -275,7 +275,7 @@ class ServicioController extends Controller
                 $estados = $detalle->estadosEstacion()->get();
                 $listo = $estados->isNotEmpty()
                     && $estados->every(fn ($item) => in_array($item->estado, self::ESTADOS_LISTOS, true));
-                abort_unless($listo || $this->esSalidaInmediata($detalle), 422, 'El producto todavía no está listo para llevar.');
+                abort_unless($listo || $this->esSalidaInmediata($detalle, $orden), 422, 'El producto todavía no está listo para llevar.');
             } else {
                 abort_unless($transportista !== null, 409, 'Primero indica que llevarás el producto.');
                 abort_unless($transportista === $mesero->id || ($accion === 'cancelar' && $orden->mesero_id === $mesero->id), 403, 'Solo quien lleva el producto puede confirmar su entrega.');
@@ -292,8 +292,9 @@ class ServicioController extends Controller
         return response()->json(['message' => 'Colaboración registrada.', 'orden_id' => $orden->id]);
     }
 
-    private function esSalidaInmediata(OrdenDetalle $detalle): bool
+    private function esSalidaInmediata(OrdenDetalle $detalle, Orden $orden): bool
     {
+        if ($orden->tipo_orden !== 'dine-in') return false;
         $producto = $detalle->producto;
         $texto = collect([
             $producto?->categoria?->parent?->nombre,

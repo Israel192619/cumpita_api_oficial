@@ -573,7 +573,7 @@ class ServicioControllerTest extends TestCase
     public function test_sopa_pendiente_puede_reservarse_y_entregarse_sin_tomar_la_ficha(): void
     {
         [$responsable, $ayudante] = $this->meseros();
-        $orden = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 904, 'estado' => 'preparando']);
+        $orden = Orden::create(['user_id' => $responsable->id, 'mesero_id' => $responsable->id, 'numero_orden' => 904, 'estado' => 'preparando', 'tipo_orden' => 'dine-in']);
         $producto = Producto::create(['nombre' => 'Sopa de maní', 'estacion_id' => 1]);
         $detalle = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1]);
         $controller = new ServicioController();
@@ -598,6 +598,29 @@ class ServicioControllerTest extends TestCase
         $estado = app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh());
         $this->assertTrue($estado['servido']);
         $this->assertSame($ayudante->name, $estado['entregado_por']);
+    }
+
+    public function test_sopa_para_llevar_no_se_adelanta_si_sigue_pendiente(): void
+    {
+        [$responsable, $ayudante] = $this->meseros();
+        $orden = Orden::create([
+            'user_id' => $responsable->id, 'mesero_id' => $responsable->id,
+            'numero_orden' => 905, 'estado' => 'preparando', 'tipo_orden' => 'to-go',
+        ]);
+        $producto = Producto::create(['nombre' => 'Sopa', 'estacion_id' => 1]);
+        $detalle = OrdenDetalle::create(['orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 1]);
+        $this->autenticarServicio($ayudante);
+
+        try {
+            (new ServicioController())->colaborar(
+                Request::create('/', 'POST', ['accion' => 'llevar']),
+                $detalle,
+                app(KdsEstacionService::class),
+            );
+            $this->fail('Una sopa para llevar debe esperar al pedido completo.');
+        } catch (HttpExceptionInterface $error) {
+            $this->assertSame(422, $error->getStatusCode());
+        }
     }
 
     public function test_colaboracion_tablero_incluye_fichas_ajenas_y_categoria_padre(): void
