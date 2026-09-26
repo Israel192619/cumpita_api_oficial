@@ -16,6 +16,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class ServicioController extends Controller
@@ -85,14 +86,14 @@ class ServicioController extends Controller
     public function tomar(Orden $orden)
     {
         $mesero = $this->meseroServicio();
-        $orden = DB::transaction(function () use ($orden, $mesero) {
+        [$orden, $recomendacion] = DB::transaction(function () use ($orden, $mesero) {
             // Bloquear al usuario primero serializa dos tomas simultáneas de fichas distintas.
             DB::table('users')->where('id', $mesero->id)->lockForUpdate()->first();
             $orden = Orden::lockForUpdate()->findOrFail($orden->id);
             $this->asegurarOrdenOperativa($orden);
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya no está disponible.');
             abort_if($orden->mesero_id && $orden->mesero_id !== $mesero->id, 409, 'Otro mesero ya tomó esta ficha.');
-            if ($orden->mesero_id === $mesero->id) return $orden;
+            if ($orden->mesero_id === $mesero->id) return [$orden, null];
             $detalleEnCamino = OrdenDetalle::with('historialCambios.user')->where('orden_id', $orden->id)->get()
                 ->first(fn ($detalle) => app(ServicioColaboracionService::class)->estado($detalle)['es_apoyo']);
             if ($detalleEnCamino) {
@@ -103,12 +104,14 @@ class ServicioController extends Controller
             $activas = Orden::where('mesero_id', $mesero->id)
                 ->whereNotIn('estado', ['entregado', 'cancelado'])
                 ->lockForUpdate()->get(['id'])->count();
-            abort_if($activas >= self::MAX_FICHAS_POR_MESERO, 422, 'Ya tienes 2 fichas activas. Termina o libera una antes de tomar otra.');
             $orden->update(['mesero_id' => $mesero->id, 'tomada_en' => now()]);
-            return $orden;
+            $recomendacion = $activas >= self::MAX_FICHAS_POR_MESERO
+                ? 'Recomendación: atiende solo 2 fichas a la vez para trabajar con mayor rapidez.'
+                : null;
+            return [$orden, $recomendacion];
         });
         $this->notificar($orden, 'tomada');
-        return response()->json(['message' => 'Ficha tomada.', 'orden_id' => $orden->id]);
+        return response()->json(['message' => 'Ficha tomada.', 'orden_id' => $orden->id, 'recomendacion' => $recomendacion]);
     }
 
     public function apoyar(Request $request, Orden $orden, KdsEstacionService $kds)
@@ -260,7 +263,8 @@ class ServicioController extends Controller
             $orden = Orden::lockForUpdate()->findOrFail($detalle->orden_id);
             $this->asegurarOrdenOperativa($orden);
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
-            $detalle = OrdenDetalle::lockForUpdate()->findOrFail($detalle->id);
+            $detalle = OrdenDetalle::with(['producto.categoria.parent', 'historialCambios.user'])
+                ->lockForUpdate()->findOrFail($detalle->id);
             $colaboracion = app(ServicioColaboracionService::class);
             $estado = $colaboracion->estado($detalle);
             $transportista = $estado['llevando_por_id'];
@@ -269,7 +273,9 @@ class ServicioController extends Controller
                 abort_if($transportista !== null, 409, 'Este producto ya está en camino con otro mesero.');
                 $kds->sincronizarDetalle($detalle);
                 $estados = $detalle->estadosEstacion()->get();
-                abort_unless($estados->isNotEmpty() && $estados->every(fn ($item) => in_array($item->estado, self::ESTADOS_LISTOS, true)), 422, 'El producto todavía no está listo para llevar.');
+                $listo = $estados->isNotEmpty()
+                    && $estados->every(fn ($item) => in_array($item->estado, self::ESTADOS_LISTOS, true));
+                abort_unless($listo || $this->esSalidaInmediata($detalle), 422, 'El producto todavía no está listo para llevar.');
             } else {
                 abort_unless($transportista !== null, 409, 'Primero indica que llevarás el producto.');
                 abort_unless($transportista === $mesero->id || ($accion === 'cancelar' && $orden->mesero_id === $mesero->id), 403, 'Solo quien lleva el producto puede confirmar su entrega.');
@@ -284,6 +290,19 @@ class ServicioController extends Controller
         });
         $this->notificar($orden, 'colaboracion');
         return response()->json(['message' => 'Colaboración registrada.', 'orden_id' => $orden->id]);
+    }
+
+    private function esSalidaInmediata(OrdenDetalle $detalle): bool
+    {
+        $producto = $detalle->producto;
+        $texto = collect([
+            $producto?->categoria?->parent?->nombre,
+            $producto?->categoria?->nombre,
+            $producto?->nombre,
+        ])->filter()->implode(' ');
+        $normalizado = mb_strtolower(Str::ascii($texto));
+
+        return preg_match('/\b(agua|aguas|bebida|bebidas|cerveza|cervezas|coctel|cocteles|gaseosa|gaseosas|jugo|jugos|refresco|refrescos|sopa|sopas|vino|vinos)\b/u', $normalizado) === 1;
     }
 
     public function liberar(Orden $orden)
