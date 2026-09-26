@@ -107,6 +107,7 @@ Route::middleware('jwt')->group(function () {
         Route::post('ordenes/{orden}/activar-preorden', [OrdenController::class, 'activarPreorden']);
         Route::patch('ordenes/{orden}/delivery-cambio', [OrdenController::class, 'prepararCambioDelivery']);
         Route::apiResource('ordenes', OrdenController::class)->only(['index', 'destroy']);
+        Route::post('pagos-ordenes/dividido', [PagoOrdenController::class, 'storeDividido']);
         Route::apiResource('pagos-ordenes', PagoOrdenController::class);
     });
 
