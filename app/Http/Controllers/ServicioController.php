@@ -12,6 +12,7 @@ use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleEstacion;
 use App\Services\KdsEstacionService;
 use App\Services\ServicioColaboracionService;
+use App\Services\PreordenActivationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -24,8 +25,9 @@ class ServicioController extends Controller
     private const ESTADOS_LISTOS = ['listo_para_recoger', 'recogido', 'servido'];
     private const MAX_FICHAS_POR_MESERO = 2;
 
-    public function index(Request $request, KdsEstacionService $kds)
+    public function index(Request $request, KdsEstacionService $kds, ?PreordenActivationService $activacionPreorden = null)
     {
+        ($activacionPreorden ?? app(PreordenActivationService::class))->activarDeliveriesProximos();
         $fecha = $request->validate([
             'fecha' => ['nullable', 'date_format:Y-m-d'],
         ])['fecha'] ?? now()->toDateString();
@@ -515,6 +517,7 @@ class ServicioController extends Controller
             'tipo_flujo' => $orden->tipo_flujo,
             'estado_preorden' => $orden->estado_preorden,
             'preorden_activada_en' => $orden->preorden_activada_en?->toIso8601String(),
+            'fecha_programada' => $orden->fecha_programada?->toIso8601String(),
             'hora' => ($orden->fecha_orden ?? $orden->created_at)?->format('H:i'),
             'tiempo_espera_minutos' => (int) ($orden->fecha_orden ?? $orden->created_at)?->diffInMinutes(now()),
             'mesero' => $orden->mesero?->name, 'mesero_id' => $orden->mesero_id, 'estado' => $orden->estado, 'detalles' => $detalles,
@@ -564,6 +567,8 @@ class ServicioController extends Controller
             ])->values(),
             'total_items' => $orden->detalles->count(),
             'bloqueada' => true,
+            'preorden_cliente_no_llego' => $orden->tipo_orden !== 'delivery' && $orden->fecha_programada?->isPast(),
+            'preorden_proxima' => $orden->tipo_orden !== 'delivery' && $orden->fecha_programada?->lessThanOrEqualTo(now()->addMinutes(5)),
         ];
     }
 

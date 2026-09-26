@@ -9,6 +9,7 @@ use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleEstacion;
 use App\Services\KdsEstacionService;
 use App\Services\KdsAsignacionService;
+use App\Services\PreordenActivationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,8 +22,10 @@ class CocinaController extends Controller
         Request $request,
         KdsAsignacionService $asignaciones,
         KdsEstacionService $kds,
+        PreordenActivationService $activacionPreorden,
     )
     {
+        $activacionPreorden->activarDeliveriesProximos();
         $request->validate(['orden_ids' => ['sometimes', 'array', 'min:1', 'max:100'],
             'orden_ids.*' => ['integer', 'min:1', 'distinct']]);
         $ids = $request->has('orden_ids') ? array_map('intval', $request->input('orden_ids')) : null;
@@ -32,21 +35,21 @@ class CocinaController extends Controller
         // sirven para revisión y para corregir un toque accidental.
         $activos = ['pendiente', 'en_preparacion', 'listo_para_recoger', 'servido'];
 
-        // Parrilla puede adelantar una preorden durante los últimos 30 minutos.
-        // La orden sigue programada para Caja; solo se habilita su preparación.
+        // Mesa y para llevar se anuncian a ambas estaciones cinco minutos antes,
+        // pero siguen bloqueadas hasta que Caja o un mesero confirme la llegada.
         $inicioVentana = now();
-        $finVentana = $inicioVentana->copy()->addMinutes(30);
+        $finVentana = $inicioVentana->copy()->addMinutes(5);
         $preordenesTempranas = collect();
-        if ($estacion->codigo === 'PARRILLA' && $fecha === $inicioVentana->toDateString()) {
+        if ($fecha === $inicioVentana->toDateString()) {
             $preordenesTempranas = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
                 'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
                 'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
                 'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
-            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
+            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->whereIn('tipo_orden', ['dine-in', 'to-go'])->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
-                // Si Caja aún no la activó y la hora ya pasó, Parrilla debe
-                // seguir viéndola: es una preorden atrasada, no una que deba
+                // Si Caja o Servicio aún no la activó y la hora ya pasó, ambas
+                // estaciones deben seguir viéndola: no debe desaparecer.
                 // volver a desaparecer del tablero.
                 ->where('fecha_programada', '<=', $finVentana)
                 ->orderBy('fecha_programada')->get();
@@ -87,6 +90,7 @@ class CocinaController extends Controller
             ->map(function (Orden $orden) use ($estacion, $activos) {
                 $data = $this->proyectarOrden($orden, $estacion->id, $activos);
                 $data['preorden_temprana'] = true;
+                $data['preorden_cliente_no_llego'] = $orden->fecha_programada?->isPast() ?? false;
                 return $data;
             })
             ->filter(fn (array $orden) => count($orden['detalles']) > 0)
@@ -289,18 +293,19 @@ class CocinaController extends Controller
         return response()->json(['sesion' => $resultado['sesion']->only(['id', 'color', 'ultima_actividad'])]);
     }
 
-    public function preordenesProximas(Request $request)
+    public function preordenesProximas(Request $request, PreordenActivationService $activacionPreorden)
     {
+        $activacionPreorden->activarDeliveriesProximos();
         $fecha = $request->input('fecha', now()->toDateString());
         $estacion = $this->resolverEstacion($request);
-        if ($estacion->codigo !== 'PARRILLA' || $fecha !== now()->toDateString()) {
+        if ($fecha !== now()->toDateString()) {
             return response()->json(['ids' => []]);
         }
 
         return response()->json([
-            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
+            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->whereIn('tipo_orden', ['dine-in', 'to-go'])->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
-                ->where('fecha_programada', '<=', now()->addMinutes(30))
+                ->where('fecha_programada', '<=', now()->addMinutes(5))
                 ->orderBy('fecha_programada')->pluck('id')->map(fn ($id) => (int) $id)->all(),
         ]);
     }
@@ -444,14 +449,6 @@ class CocinaController extends Controller
 
         $ultima = $nombres->pop();
         return $nombres->implode(', ') . ' y ' . $ultima;
-    }
-
-    private function puedePrepararPreordenAnticipada(Orden $orden, EstacionTrabajo $estacion): bool
-    {
-        if ($estacion->codigo !== 'PARRILLA' || !$orden->fecha_programada) return false;
-
-        $ahora = now();
-        return $orden->fecha_programada->lessThanOrEqualTo($ahora->copy()->addMinutes(30));
     }
 
     /** @param \Illuminate\Support\Collection<int, array> $ordenes */

@@ -191,4 +191,48 @@ class CocinaPedidosTest extends TestCase
             }
         }
     }
+
+    public function test_mesa_y_para_llevar_aparecen_en_ambas_estaciones_cinco_minutos_antes_sin_activarse(): void
+    {
+        $this->test_pedido_nuevo_conserva_producto_categoria_y_guarniciones_en_ambas_estaciones();
+        $orden = \App\Models\Orden::firstOrFail();
+        $orden->update([
+            'tipo_orden' => 'to-go',
+            'tipo_flujo' => 'preorden',
+            'estado_preorden' => 'programada',
+            'fecha_programada' => now()->addMinutes(4),
+        ]);
+
+        foreach (['COCINA', 'PARRILLA'] as $estacion) {
+            $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion='.$estacion)
+                ->assertOk()
+                ->assertJsonPath('ordenes.0.id', $orden->id)
+                ->assertJsonPath('ordenes.0.preorden_temprana', true)
+                ->assertJsonPath('ordenes.0.preorden_cliente_no_llego', false);
+        }
+
+        $this->assertSame('programada', $orden->fresh()->estado_preorden);
+    }
+
+    public function test_delivery_se_activa_automaticamente_tres_minutos_antes(): void
+    {
+        $this->test_pedido_nuevo_conserva_producto_categoria_y_guarniciones_en_ambas_estaciones();
+        $orden = \App\Models\Orden::firstOrFail();
+        $orden->update([
+            'tipo_orden' => 'delivery',
+            'tipo_flujo' => 'preorden',
+            'estado_preorden' => 'programada',
+            'fecha_programada' => now()->addMinutes(2),
+        ]);
+
+        $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion=COCINA')
+            ->assertOk()
+            ->assertJsonPath('ordenes.0.id', $orden->id)
+            ->assertJsonPath('ordenes.0.estado_preorden', 'activada');
+
+        $orden->refresh();
+        $this->assertSame('activada', $orden->estado_preorden);
+        $this->assertNotNull($orden->preorden_activada_en);
+        $this->assertNull($orden->preorden_activada_por);
+    }
 }

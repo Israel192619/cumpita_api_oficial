@@ -33,8 +33,9 @@ class OrdenController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index(Request $request)
+    public function index(Request $request, ?\App\Services\PreordenActivationService $activacionPreorden = null)
     {
+        ($activacionPreorden ?? app(\App\Services\PreordenActivationService::class))->activarDeliveriesProximos();
         $query = Orden::with('user', 'cliente', 'mesa', 'pagos', 'detalles.producto.combinaciones.opciones', 'detalles.estacion', 'detalles.opciones.modificadorOpcion', 'preordenActivadaPor')
             ->where(fn ($query) => $query->whereNull('estado_solicitud')->orWhereIn('estado_solicitud', ['aceptada', 'rechazada']))
             ->withMax('cambiosMesero as ultimo_cambio_mesero_en', 'created_at')
@@ -800,41 +801,14 @@ class OrdenController extends Controller
         return 'Bs '.number_format($monto, 2, ',', '.');
     }
 
-    public function activarPreorden(string $id)
+    public function activarPreorden(string $id, \App\Services\PreordenActivationService $activacion)
     {
         try {
-            $orden = DB::transaction(function () use ($id) {
-                $orden = Orden::with([
-                    'detalles.opciones.modificadorOpcion.modificador',
-                    'detalles.estadosEstacion',
-                ])->lockForUpdate()->findOrFail($id);
-                abort_unless($orden->tipo_flujo === 'preorden', 422, 'La orden seleccionada no es una preorden.');
-                abort_if($orden->estado_solicitud === 'pendiente', 422, 'La solicitud debe ser aceptada antes de activar la preorden.');
-                abort_if($orden->estado_preorden === 'activada', 409, 'La preorden ya fue activada.');
-                abort_if($orden->estado_preorden === 'cancelada', 422, 'Una preorden cancelada no puede activarse.');
+            $preorden = Orden::findOrFail($id);
+            abort_if($preorden->tipo_orden === 'delivery', 422, 'El delivery se habilita automáticamente 3 minutos antes de la hora programada.');
+            $orden = $activacion->activar((int) $id, auth('api')->id());
 
-                $orden->update([
-                    'estado_preorden' => 'activada',
-                    'preorden_activada_en' => now(),
-                    'preorden_activada_por' => auth('api')->id(),
-                    'fecha_orden' => now(),
-                    'estado' => 'pendiente',
-                ]);
-                // Al pasar de programada a activa deben existir desde este
-                // instante todos los estados secundarios. Así Cocina muestra
-                // también los productos que siguen esperando a Parrilla.
-                $kds = app(\App\Services\KdsEstacionService::class);
-                foreach ($orden->detalles as $detalle) {
-                    $detalle->unsetRelation('estadosEstacion');
-                    $kds->sincronizarDetalle($detalle);
-                }
-                return $orden->fresh(['cliente', 'mesa', 'detalles.producto', 'detalles.estadosEstacion']);
-            });
-
-            $this->emitirEventoSeguro(new PreordenActualizadaEvent($orden, 'preorden_activada'), 'preorden_activada', $orden->id);
-            $this->emitirEventoSeguro(new OrdenCreadaEvent($orden), 'orden_creada', $orden->id);
-
-            return response()->json(['message' => 'Preorden activada correctamente.', 'orden' => $orden]);
+            return response()->json(['message' => 'Llegada confirmada. La preorden ya está activa.', 'orden' => $orden]);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
             throw $e;
         } catch (\Throwable $e) {
