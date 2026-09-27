@@ -78,7 +78,7 @@ class OrdenAdicionalController extends Controller
             foreach ($producto->opciones->filter(fn ($opcion) => $opcion->modificador?->activo)->groupBy('modificador_id') as $grupo) {
                 $modificador = $grupo->first()?->modificador;
                 $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador?->id)?->cantidad_requerida;
-                $cantidadEsMaxima = $modificador?->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador?->id)?->cantidad_es_maxima;
+                $cantidadEsMaxima = $modificador?->usaLimiteMaximo() ?? false;
                 $idsActivos = $grupo->filter(fn ($opcion) => $opcion->activo)->pluck('id');
                 $cantidadSeleccionada = $idsSeleccionados->filter(fn ($id) => $idsActivos->contains($id))->count();
                 abort_if($cantidadRequerida !== null && $cantidadEsMaxima && $cantidadSeleccionada > (int) $cantidadRequerida, 422,

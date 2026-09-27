@@ -124,7 +124,9 @@ class Producto extends Model
                     'tipo' => $modificador->tipo,          // 'unico' o 'multiple'
                     'requerido' => (bool) $modificador->requerido,
                     'cantidad_requerida' => $configuraciones->get($modificador->id)?->cantidad_requerida,
-                    'cantidad_es_maxima' => $modificador->usaLimiteMaximo() || (bool) ($configuraciones->get($modificador->id)?->cantidad_es_maxima),
+                    // Solo Guarniciones admite de cero hasta el límite. Los demás
+                    // grupos configurados (por ejemplo Presas de pollo) son exactos.
+                    'cantidad_es_maxima' => $modificador->usaLimiteMaximo(),
                     'opciones' => $opciones->filter(fn ($opc) => $opc->activo)->map(function ($opc) {
                         return [
                             'id' => $opc->id,

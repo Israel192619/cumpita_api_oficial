@@ -308,7 +308,7 @@ class SolicitudPreordenController extends Controller
             $idsActivos = $opciones->where('activo', true)->pluck('id');
             $cantidad = $elegidas->filter(fn ($id) => $idsActivos->contains($id))->count();
             $requerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_requerida;
-            $esMaxima = $modificador->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_es_maxima;
+            $esMaxima = $modificador->usaLimiteMaximo();
             abort_if($requerida !== null && $esMaxima && $cantidad > (int) $requerida, 422, "Puedes elegir hasta {$requerida} en {$modificador->nombre}.");
             abort_if($requerida !== null && !$esMaxima && $cantidad !== (int) $requerida, 422, "Debes elegir exactamente {$requerida} en {$modificador->nombre}.");
             abort_if($requerida === null && $modificador->requerido && $cantidad === 0, 422, "Debes elegir una opción en {$modificador->nombre}.");

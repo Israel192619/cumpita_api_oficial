@@ -30,7 +30,9 @@ class LimiteGuarnicionesTest extends TestCase
         $producto->opciones()->attach([$ala->id => ['predeterminado' => true], $pecho->id => ['predeterminado' => true]]);
         ProductoModificadorConfiguracion::create([
             'producto_id' => $producto->id, 'modificador_id' => $grupo->id,
-            'cantidad_requerida' => 2, 'cantidad_es_maxima' => false,
+            // Aunque un dato antiguo esté marcado como máximo, Presas debe
+            // continuar exigiendo exactamente dos selecciones.
+            'cantidad_requerida' => 2, 'cantidad_es_maxima' => true,
         ]);
         $ala->update(['activo' => false]);
         $producto = Producto::with(['opciones.modificador', 'configuracionesModificador'])->findOrFail(9);
@@ -55,6 +57,33 @@ class LimiteGuarnicionesTest extends TestCase
             $this->assertSame(422, $error->getStatusCode());
         }
         $this->assertNull($validarPreorden->invoke(new SolicitudPreordenController(), $producto, collect([$pecho->id, $pecho->id])));
+    }
+
+    public function test_una_presa_es_obligatoria_aunque_la_configuracion_antigua_diga_maximo(): void
+    {
+        $this->seed();
+        $grupo = Modificador::create(['nombre' => 'Presas de pollo', 'tipo' => 'multiple', 'requerido' => true, 'activo' => true]);
+        $ala = ModificadorOpcion::create(['modificador_id' => $grupo->id, 'nombre' => 'Ala', 'precio_extra' => 0, 'activo' => true]);
+        $producto = Producto::findOrFail(8);
+        $producto->opciones()->attach($ala->id);
+        ProductoModificadorConfiguracion::create([
+            'producto_id' => $producto->id, 'modificador_id' => $grupo->id,
+            'cantidad_requerida' => 1, 'cantidad_es_maxima' => true,
+        ]);
+        $producto = Producto::with(['opciones.modificador', 'configuracionesModificador'])->findOrFail(8);
+        $catalogo = collect($producto->modificadores_estructurados)->firstWhere('id', $grupo->id);
+        $this->assertFalse($catalogo['cantidad_es_maxima']);
+
+        $validar = new \ReflectionMethod(OrdenController::class, 'validarModificadoresProducto');
+        try {
+            $validar->invoke(new OrdenController(), $producto, []);
+            $this->fail('No debe aceptarse un pollo de una presa sin presa.');
+        } catch (\RuntimeException $error) {
+            $this->assertStringContainsString('exactamente 1', $error->getMessage());
+        }
+        $this->assertNull($validar->invoke(new OrdenController(), $producto, [
+            ['modificador_opcion_id' => $ala->id],
+        ]));
     }
 
     public function test_desactivar_una_opcion_notifica_a_los_productos_afectados(): void

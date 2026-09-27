@@ -1059,7 +1059,7 @@ class OrdenController extends Controller
                 $idsActivos = $opciones->filter(fn ($opcion) => $opcion->activo)->pluck('id');
                 $cantidad = $elegidas->filter(fn ($id) => $idsActivos->contains($id))->count();
                 $cantidadRequerida = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_requerida;
-                $cantidadEsMaxima = $modificador->usaLimiteMaximo() || (bool) $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id)?->cantidad_es_maxima;
+                $cantidadEsMaxima = $modificador->usaLimiteMaximo();
                 if ($cantidadRequerida !== null && $cantidadEsMaxima && $cantidad > (int) $cantidadRequerida) {
                     throw new \RuntimeException('Puedes elegir hasta ' . $cantidadRequerida . ' en “' . $modificador->nombre . '” para ' . $producto->nombre . '.');
                 }

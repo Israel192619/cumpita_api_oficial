@@ -335,8 +335,7 @@ class ProductoController extends Controller
                 'producto_id' => $producto->id,
                 'modificador_id' => $configuracion['id'],
                 'cantidad_requerida' => $configuracion['cantidad_requerida'] ?? null,
-                'cantidad_es_maxima' => Modificador::find($configuracion['id'])?->usaLimiteMaximo()
-                    || (bool) ($configuracion['cantidad_es_maxima'] ?? false),
+                'cantidad_es_maxima' => Modificador::find($configuracion['id'])?->usaLimiteMaximo() ?? false,
             ]);
         }
     }
@@ -417,7 +416,7 @@ class ProductoController extends Controller
             $cantidad = $opcionIds->filter(fn ($id) => $idsGrupo->contains($id))->count();
             $configuracion = $producto->configuracionesModificador->firstWhere('modificador_id', $modificador->id);
             $requerida = $configuracion?->cantidad_requerida;
-            $esMaxima = $modificador->usaLimiteMaximo() || (bool) $configuracion?->cantidad_es_maxima;
+            $esMaxima = $modificador->usaLimiteMaximo();
             $invalida = ($requerida !== null && $esMaxima && $cantidad > (int) $requerida)
                 || ($requerida !== null && !$esMaxima && $cantidad !== (int) $requerida)
                 || ($requerida === null && $modificador->requerido && $cantidad === 0)
