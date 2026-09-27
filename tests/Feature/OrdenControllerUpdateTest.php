@@ -22,6 +22,73 @@ class OrdenControllerUpdateTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_permite_editar_una_preorden_aunque_su_hora_ya_haya_pasado(): void
+    {
+        Event::fake();
+        $role = Role::create(['nombre' => 'Cajero']);
+        $user = User::factory()->create(['role_id' => $role->id]);
+        $cliente = Cliente::create(['nombre' => 'Cliente preorden vencida']);
+        $fechaPasada = now()->subHour()->format('Y-m-d\TH:i:s');
+        $orden = Orden::create([
+            'user_id' => $user->id,
+            'cliente_id' => $cliente->id,
+            'numero_orden' => 91,
+            'tipo_flujo' => 'preorden',
+            'estado_preorden' => 'programada',
+            'fecha_programada' => $fechaPasada,
+            'estado' => 'pendiente',
+            'subtotal' => 0,
+            'total' => 0,
+        ]);
+
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
+            'cliente_id' => $cliente->id,
+            'tipo_flujo' => 'preorden',
+            'fecha_programada' => $fechaPasada,
+            'observaciones' => 'Corrección posterior a la hora',
+        ])->assertOk()
+            ->assertJsonPath('orden.observaciones', 'Corrección posterior a la hora');
+
+        $this->assertDatabaseHas('ordenes', [
+            'id' => $orden->id,
+            'tipo_flujo' => 'preorden',
+            'estado_preorden' => 'programada',
+            'observaciones' => 'Corrección posterior a la hora',
+        ]);
+    }
+
+    public function test_no_permite_convertir_una_orden_normal_en_preorden_con_hora_pasada(): void
+    {
+        Event::fake();
+        $role = Role::create(['nombre' => 'Cajero']);
+        $user = User::factory()->create(['role_id' => $role->id]);
+        $cliente = Cliente::create(['nombre' => 'Cliente orden normal']);
+        $orden = Orden::create([
+            'user_id' => $user->id,
+            'cliente_id' => $cliente->id,
+            'numero_orden' => 92,
+            'tipo_flujo' => 'normal',
+            'estado' => 'pendiente',
+            'subtotal' => 0,
+            'total' => 0,
+        ]);
+
+        $this->withToken(JWTAuth::fromUser($user))->putJson('/api/ordenes/'.$orden->id, [
+            'expected_version' => $orden->fresh()->version,
+            'cliente_id' => $cliente->id,
+            'tipo_flujo' => 'preorden',
+            'fecha_programada' => now()->subHour()->format('Y-m-d\TH:i:s'),
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'La fecha programada debe ser futura.');
+
+        $this->assertDatabaseHas('ordenes', [
+            'id' => $orden->id,
+            'tipo_flujo' => 'normal',
+            'fecha_programada' => null,
+        ]);
+    }
+
     public function test_it_updates_an_existing_order_with_the_sent_fields_and_items(): void
     {
         $role = Role::create([

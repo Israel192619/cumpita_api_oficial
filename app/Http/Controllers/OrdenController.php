@@ -531,7 +531,12 @@ class OrdenController extends Controller
                     }
                     if ($tipoFlujo === 'preorden' && $orden->estado_preorden !== 'activada') {
                         abort_unless($request->filled('fecha_programada'), 422, 'La fecha programada es obligatoria para una preorden.');
-                        abort_unless(Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_programada)->isFuture(), 422, 'La fecha programada debe ser futura.');
+                        // Una preorden existente puede necesitar correcciones después
+                        // de su hora programada. La restricción de hora futura sólo se
+                        // aplica al convertir una orden normal en una nueva preorden.
+                        if ($orden->tipo_flujo !== 'preorden') {
+                            abort_unless(Carbon::createFromFormat('Y-m-d\TH:i:s', $request->fecha_programada)->isFuture(), 422, 'La fecha programada debe ser futura.');
+                        }
                     }
                     $updateData['tipo_flujo'] = $tipoFlujo;
                     $updateData['fecha_programada'] = $tipoFlujo === 'preorden' ? $request->input('fecha_programada', $orden->fecha_programada) : null;
