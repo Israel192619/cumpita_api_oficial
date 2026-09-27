@@ -215,6 +215,29 @@ class CocinaPedidosTest extends TestCase
         $this->assertSame('programada', $orden->fresh()->estado_preorden);
     }
 
+    public function test_parrilla_recibe_y_cuenta_preorden_programada_desde_treinta_minutos_antes(): void
+    {
+        $this->test_pedido_nuevo_conserva_producto_categoria_y_guarniciones_en_ambas_estaciones();
+        $orden = \App\Models\Orden::firstOrFail();
+        $orden->update([
+            'tipo_orden' => 'dine-in',
+            'tipo_flujo' => 'preorden',
+            'estado_preorden' => 'programada',
+            'fecha_programada' => now()->addMinutes(20),
+        ]);
+
+        $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion=PARRILLA')
+            ->assertOk()
+            ->assertJsonPath('ordenes.0.id', $orden->id)
+            ->assertJsonPath('ordenes.0.preorden_temprana', true);
+        $this->getJson('/api/kds/preordenes-proximas?fecha='.now()->toDateString().'&estacion=PARRILLA')
+            ->assertOk()->assertJsonPath('ids.0', $orden->id);
+
+        $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion=COCINA')
+            ->assertOk()->assertJsonCount(0, 'ordenes');
+        $this->assertSame('programada', $orden->fresh()->estado_preorden);
+    }
+
     public function test_delivery_se_activa_automaticamente_tres_minutos_antes(): void
     {
         $this->test_pedido_nuevo_conserva_producto_categoria_y_guarniciones_en_ambas_estaciones();

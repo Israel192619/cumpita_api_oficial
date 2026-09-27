@@ -35,10 +35,15 @@ class CocinaController extends Controller
         // sirven para revisión y para corregir un toque accidental.
         $activos = ['pendiente', 'en_preparacion', 'listo_para_recoger', 'servido'];
 
-        // Mesa y para llevar se anuncian a ambas estaciones cinco minutos antes,
-        // pero siguen bloqueadas hasta que Caja o un mesero confirme la llegada.
+        // Parrilla necesita conocer los pescados con 30 minutos de anticipación
+        // para iniciar la cocción. Cocina conserva una ventana corta de 5 minutos.
+        // La preorden sigue programada hasta que corresponda activarla.
         $inicioVentana = now();
-        $finVentana = $inicioVentana->copy()->addMinutes(5);
+        $minutosVentana = $estacion->codigo === 'PARRILLA' ? 30 : 5;
+        $finVentana = $inicioVentana->copy()->addMinutes($minutosVentana);
+        $tiposPreordenVentana = $estacion->codigo === 'PARRILLA'
+            ? ['dine-in', 'to-go', 'delivery']
+            : ['dine-in', 'to-go'];
         $preordenesTempranas = collect();
         if ($fecha === $inicioVentana->toDateString()) {
             $preordenesTempranas = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
@@ -46,7 +51,7 @@ class CocinaController extends Controller
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
                 'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
                 'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
-            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->whereIn('tipo_orden', ['dine-in', 'to-go'])->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
+            ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->whereIn('tipo_orden', $tiposPreordenVentana)->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
                 // Si Caja o Servicio aún no la activó y la hora ya pasó, ambas
                 // estaciones deben seguir viéndola: no debe desaparecer.
@@ -303,9 +308,11 @@ class CocinaController extends Controller
         }
 
         return response()->json([
-            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->whereIn('tipo_orden', ['dine-in', 'to-go'])->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
+            'ids' => Orden::where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')
+                ->whereIn('tipo_orden', $estacion->codigo === 'PARRILLA' ? ['dine-in', 'to-go', 'delivery'] : ['dine-in', 'to-go'])
+                ->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
                 ->whereDate('fecha_programada', $fecha)
-                ->where('fecha_programada', '<=', now()->addMinutes(5))
+                ->where('fecha_programada', '<=', now()->addMinutes($estacion->codigo === 'PARRILLA' ? 30 : 5))
                 ->orderBy('fecha_programada')->pluck('id')->map(fn ($id) => (int) $id)->all(),
         ]);
     }
