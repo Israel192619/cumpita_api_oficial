@@ -110,6 +110,7 @@ class ProductoController extends Controller
                 'nombre'       => $data['nombre'],
                 'descripcion'  => $data['descripcion'] ?? null,
                 'precio'       => $data['precio'],
+                'sku'          => $data['sku'] ?? null,
                 'activo'       => $data['activo'] ?? true,
                 'maneja_stock' => $data['maneja_stock'] ?? false,
                 'stock'        => $data['stock'] ?? null,
@@ -196,6 +197,7 @@ class ProductoController extends Controller
                 'nombre'       => $data['nombre'],
                 'descripcion'  => $data['descripcion'] ?? null,
                 'precio'       => $data['precio'],
+                'sku'          => $data['sku'] ?? null,
                 'activo'       => $data['activo'] ?? true,
                 'maneja_stock' => $data['maneja_stock'] ?? false,
                 'stock'        => $data['stock'] ?? null,
@@ -292,6 +294,10 @@ class ProductoController extends Controller
 
     private function validarProducto(Request $request)
     {
+        $sku = strtoupper(trim((string) $request->input('sku', '')));
+        $request->merge(['sku' => $sku !== '' ? $sku : null]);
+        $productoActual = $request->route('producto');
+
         return $request->validate([
             'categoria_id' => 'required|exists:categorias,id',
             'estacion_id' => [
@@ -301,6 +307,13 @@ class ProductoController extends Controller
             'nombre' => 'required|string|max:255',
             'descripcion' => 'nullable|string',
             'precio' => 'required|numeric|min:0',
+            'sku' => [
+                'nullable',
+                'string',
+                'max:64',
+                'regex:/^[A-Z0-9._-]+$/',
+                Rule::unique('productos', 'sku')->ignore($productoActual),
+            ],
             'activo' => 'boolean',
             'maneja_stock' => 'required|boolean',
             // Validación condicional: Si maneja_stock es true, estos campos son obligatorios

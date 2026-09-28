@@ -12,6 +12,7 @@ class Producto extends Model
         'nombre', 
         'descripcion', 
         'precio', 
+        'sku',
         'imagen', 
         'activo', 
         'maneja_stock', 
