@@ -47,7 +47,7 @@ class CocinaController extends Controller
         $preordenesTempranas = collect();
         if ($fecha === $inicioVentana->toDateString()) {
             $preordenesTempranas = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
-                'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
+                'cliente', 'mesa:id,numero', 'mesero:id,name', 'detalles.producto.categoria',
                 'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
                 'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
                 'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
@@ -62,7 +62,7 @@ class CocinaController extends Controller
         }
 
         $ordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
-            'cliente', 'mesa:id,numero', 'detalles.producto.categoria',
+            'cliente', 'mesa:id,numero', 'mesero:id,name', 'detalles.producto.categoria',
             'detalles.estacion', 'detalles.estadosEstacion.estacion:id,nombre,codigo',
             'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
@@ -121,7 +121,7 @@ class CocinaController extends Controller
         // ficha, evitando que el operador pierda de vista el resto del pedido.
 
         $preordenes = Orden::when($ids !== null, fn ($query) => $query->whereKey($ids))->with([
-            'cliente', 'mesa:id,numero', 'detalles.producto.categoria', 'detalles.estacion',
+            'cliente', 'mesa:id,numero', 'mesero:id,name', 'detalles.producto.categoria', 'detalles.estacion',
             'detalles.combinacion.opciones.modificador:id,nombre,estacion_id,color_fondo',
             'detalles.opciones.modificadorOpcion.modificador:id,nombre,estacion_id,color_fondo',
         ])->where('tipo_flujo', 'preorden')->where('estado_preorden', 'programada')->where(fn ($q) => $q->whereNull('estado_solicitud')->orWhere('estado_solicitud', 'aceptada'))
@@ -389,6 +389,7 @@ class CocinaController extends Controller
             'estado_preorden' => $orden->estado_preorden,
             'cliente' => $orden->cliente,
             'mesa' => $orden->mesa,
+            'mesero' => $orden->mesero,
             'observaciones' => $orden->comentarioGeneral(),
             'bloqueada' => true,
             'detalles' => $orden->detalles->map(function (OrdenDetalle $detalle) use ($estacionId) {

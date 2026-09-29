@@ -102,9 +102,13 @@ class CocinaPedidosTest extends TestCase
             'items' => [['producto_id' => $producto->id, 'cantidad' => 1, 'precio_unitario' => 30,
                 'modificadores' => [['modificador_opcion_id' => $opcion->id, 'precio_extra' => 0]]]],
         ])->assertCreated();
+        $rolMesero = Role::create(['nombre' => 'Mesero']);
+        $mesero = User::factory()->create(['role_id' => $rolMesero->id, 'name' => 'Mesero de prueba']);
+        \App\Models\Orden::firstOrFail()->update(['mesero_id' => $mesero->id]);
         foreach (['COCINA', 'PARRILLA'] as $estacion) {
             $response = $this->getJson('/api/kds/pedidos?fecha='.now()->toDateString().'&estacion='.$estacion)
                 ->assertOk()->assertJsonCount(1, 'ordenes')
+                ->assertJsonPath('ordenes.0.mesero.name', 'Mesero de prueba')
                 ->assertJsonPath('ordenes.0.detalles.0.producto.nombre', 'Carne')
                 ->assertJsonPath('ordenes.0.detalles.0.producto.categoria.nombre', 'Platos');
             if ($estacion === 'COCINA') {
