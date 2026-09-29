@@ -15,6 +15,7 @@ class ServicioAsignacionAutomaticaService
     private const BLOQUEO = 'servicio:asignacion:bloqueo';
     private const SEGUNDOS_ACTIVO = 90;
     private const SEGUNDOS_PAUSA_LIBERACION = 60;
+    private const SEGUNDOS_OCUPADO = 600;
     private const MAX_FICHAS_AUTOMATICAS = 2;
 
     public function registrarYAsignar(User $mesero, string $sessionId): Collection
@@ -33,6 +34,38 @@ class ServicioAsignacionAutomaticaService
             unset($sesiones[$sessionId]);
             Cache::put(self::REGISTRO_SESIONES, $sesiones, now()->addDay());
         });
+    }
+
+    public function establecerDisponibilidad(User $mesero, string $sessionId, bool $disponible): array
+    {
+        return Cache::lock(self::BLOQUEO, 10)->block(5, function () use ($mesero, $sessionId, $disponible) {
+            $this->registrarSesion($mesero->id, $sessionId);
+            if ($disponible) {
+                Cache::forget($this->claveOcupado($mesero->id));
+            } else {
+                $hasta = now()->addSeconds(self::SEGUNDOS_OCUPADO);
+                Cache::put($this->claveOcupado($mesero->id), $hasta->timestamp, $hasta);
+            }
+
+            return [
+                ...$this->estadoDisponibilidad($mesero->id),
+                'asignadas' => $disponible ? $this->asignarDisponibles(now()->toDateString()) : collect(),
+            ];
+        });
+    }
+
+    public function estadoDisponibilidad(int $meseroId): array
+    {
+        $hasta = (int) Cache::get($this->claveOcupado($meseroId), 0);
+        if ($hasta <= now()->timestamp) {
+            if ($hasta) Cache::forget($this->claveOcupado($meseroId));
+            return ['disponible' => true, 'ocupado_hasta' => null];
+        }
+
+        return [
+            'disponible' => false,
+            'ocupado_hasta' => now()->setTimestamp($hasta)->toIso8601String(),
+        ];
     }
 
     public function pausarMesero(int $meseroId): void
@@ -69,7 +102,7 @@ class ServicioAsignacionAutomaticaService
     {
         $idsActivos = collect($this->sesionesVigentes())
             ->pluck('user_id')->map(fn ($id) => (int) $id)->unique()
-            ->reject(fn ($id) => Cache::has($this->clavePausa($id)))
+            ->reject(fn ($id) => Cache::has($this->clavePausa($id)) || !$this->estadoDisponibilidad($id)['disponible'])
             ->values();
         if ($idsActivos->isEmpty()) return collect();
 
@@ -133,5 +166,10 @@ class ServicioAsignacionAutomaticaService
     private function clavePausa(int $meseroId): string
     {
         return 'servicio:asignacion:pausa:' . $meseroId;
+    }
+
+    private function claveOcupado(int $meseroId): string
+    {
+        return 'servicio:asignacion:ocupado:' . $meseroId;
     }
 }

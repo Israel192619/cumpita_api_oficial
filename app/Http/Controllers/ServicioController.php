@@ -37,11 +37,13 @@ class ServicioController extends Controller
         if ($this->esSesionServicio()) {
             $this->asegurarMesero($usuario);
         }
+        $estadoDisponibilidad = ['disponible' => true, 'ocupado_hasta' => null];
         if ($esMesero) {
+            $asignacionAutomatica = app(ServicioAsignacionAutomaticaService::class);
             $this->notificarAsignaciones(
-                app(ServicioAsignacionAutomaticaService::class)
-                    ->registrarYAsignar($usuario, $this->sessionIdActual($usuario))
+                $asignacionAutomatica->registrarYAsignar($usuario, $this->sessionIdActual($usuario))
             );
+            $estadoDisponibilidad = $asignacionAutomatica->estadoDisponibilidad($usuario->id);
         }
         $base = Orden::with([
             'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
@@ -89,6 +91,7 @@ class ServicioController extends Controller
                     : (int) ($ficha['mesero_id'] ?? 0) === (int) $usuario->id;
             })->values(),
             'preordenes_programadas' => $preordenes->map(fn ($orden) => $this->fichaPreorden($orden))->values(),
+            'disponibilidad' => $estadoDisponibilidad,
         ]);
     }
 
@@ -344,6 +347,27 @@ class ServicioController extends Controller
         return response()->json([
             'active' => true,
             'asignadas' => $asignadas->pluck('id')->values(),
+            ...app(ServicioAsignacionAutomaticaService::class)->estadoDisponibilidad($mesero->id),
+        ]);
+    }
+
+    public function actualizarDisponibilidad(Request $request)
+    {
+        $mesero = $this->meseroServicio();
+        $disponible = $request->validate([
+            'disponible' => ['required', 'boolean'],
+        ])['disponible'];
+        $resultado = app(ServicioAsignacionAutomaticaService::class)->establecerDisponibilidad(
+            $mesero,
+            $this->sessionIdActual($mesero),
+            (bool) $disponible,
+        );
+        $this->notificarAsignaciones($resultado['asignadas']);
+
+        return response()->json([
+            'disponible' => $resultado['disponible'],
+            'ocupado_hasta' => $resultado['ocupado_hasta'],
+            'asignadas' => $resultado['asignadas']->pluck('id')->values(),
         ]);
     }
 

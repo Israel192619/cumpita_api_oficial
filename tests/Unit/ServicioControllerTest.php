@@ -301,6 +301,32 @@ class ServicioControllerTest extends TestCase
         );
     }
 
+    public function test_mesero_ocupado_conserva_sus_fichas_pero_no_recibe_nuevas(): void
+    {
+        [$meseroA, $meseroB] = $this->meseros();
+        $asignacion = app(ServicioAsignacionAutomaticaService::class);
+        $asignacion->registrarYAsignar($meseroA, 'sesion-a');
+        $asignacion->registrarYAsignar($meseroB, 'sesion-b');
+        $asignacion->establecerDisponibilidad($meseroA, 'sesion-a', false);
+        $ordenes = collect(range(211, 213))->map(fn ($numero) => Orden::create([
+            'user_id' => $meseroA->id,
+            'numero_orden' => $numero,
+            'estado' => 'pendiente',
+            'fecha_orden' => now(),
+        ]));
+
+        $asignacion->registrarYAsignar($meseroB, 'sesion-b');
+
+        $this->assertCount(0, $ordenes->filter(fn ($orden) => $orden->fresh()->mesero_id === $meseroA->id));
+        $this->assertCount(2, $ordenes->filter(fn ($orden) => $orden->fresh()->mesero_id === $meseroB->id));
+        $this->assertCount(1, $ordenes->filter(fn ($orden) => $orden->fresh()->mesero_id === null));
+
+        $resultado = $asignacion->establecerDisponibilidad($meseroA, 'sesion-a', true);
+        $this->assertTrue($resultado['disponible']);
+        $this->assertCount(1, $resultado['asignadas']);
+        $this->assertSame($meseroA->id, $ordenes->last()->fresh()->mesero_id);
+    }
+
     public function test_cerrar_servicio_desde_celular_no_invalida_el_jwt_principal(): void
     {
         [$mesero] = $this->meseros();

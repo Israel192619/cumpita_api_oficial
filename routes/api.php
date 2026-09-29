@@ -155,6 +155,7 @@ Route::middleware('jwt')->group(function () {
         Route::post('servicio/preordenes/{orden}/activar', [OrdenController::class, 'activarPreorden']);
         Route::get('servicio/fichas', [ServicioController::class, 'index']);
         Route::post('servicio/sesion/actividad', [ServicioController::class, 'actividad']);
+        Route::patch('servicio/sesion/disponibilidad', [ServicioController::class, 'actualizarDisponibilidad']);
         Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
         Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);
         Route::post('servicio/fichas/{orden}/apoyar', [ServicioController::class, 'apoyar']);
