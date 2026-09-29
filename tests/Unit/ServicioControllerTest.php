@@ -10,6 +10,7 @@ use App\Http\Controllers\ServicioController;
 use App\Http\Controllers\UserController;
 use App\Models\Modificador;
 use App\Models\ModificadorOpcion;
+use App\Models\HistorialCambioOrden;
 use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleOpcion;
@@ -17,9 +18,11 @@ use App\Models\Producto;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\KdsEstacionService;
+use App\Services\ServicioAsignacionAutomaticaService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
@@ -105,6 +108,7 @@ class ServicioControllerTest extends TestCase
         });
 
         Event::fake([OrdenCocinaActualizadaEvent::class, ServicioSesionActualizadaEvent::class, ServicioFichaActualizadaEvent::class]);
+        Cache::flush();
     }
 
     protected function tearDown(): void
@@ -257,7 +261,8 @@ class ServicioControllerTest extends TestCase
 
         $tablero = (new ServicioController())->index(Request::create('/', 'GET'), app(KdsEstacionService::class))->getData(true);
 
-        $this->assertSame([$activada->id], collect($tablero['disponibles'])->pluck('id')->all());
+        $this->assertSame([$activada->id], collect($tablero['mis_fichas'])->pluck('id')->all());
+        $this->assertSame($mesero->id, $activada->fresh()->mesero_id);
         $this->assertNotContains($programada->id, collect($tablero['disponibles'])->pluck('id')->all());
         $this->assertSame([$programada->id], collect($tablero['preordenes_programadas'])->pluck('id')->all());
         $this->assertTrue($tablero['preordenes_programadas'][0]['bloqueada']);
@@ -268,6 +273,32 @@ class ServicioControllerTest extends TestCase
         } catch (HttpExceptionInterface $e) {
             $this->assertSame(422, $e->getStatusCode());
         }
+    }
+
+    public function test_asignacion_automatica_reparte_dos_por_mesero_y_deja_el_exceso_en_cola(): void
+    {
+        [$meseroA, $meseroB] = $this->meseros();
+        $asignacion = app(ServicioAsignacionAutomaticaService::class);
+        $asignacion->registrarYAsignar($meseroA, 'sesion-a');
+        $asignacion->registrarYAsignar($meseroB, 'sesion-b');
+        $ordenes = collect(range(201, 205))->map(fn ($numero) => Orden::create([
+            'user_id' => $meseroA->id,
+            'numero_orden' => $numero,
+            'estado' => 'pendiente',
+            'fecha_orden' => now(),
+        ]));
+        $this->autenticarServicio($meseroA);
+
+        $tablero = (new ServicioController())->index(Request::create('/', 'GET'), app(KdsEstacionService::class))->getData(true);
+
+        $this->assertCount(2, $ordenes->filter(fn ($orden) => $orden->fresh()->mesero_id === $meseroA->id));
+        $this->assertCount(2, $ordenes->filter(fn ($orden) => $orden->fresh()->mesero_id === $meseroB->id));
+        $this->assertCount(1, $tablero['disponibles']);
+        $this->assertDatabaseCount('historial_cambios_orden', 4);
+        $this->assertSame(
+            ['asignacion_automatica'],
+            HistorialCambioOrden::query()->get()->pluck('datos_nuevo')->map(fn ($datos) => $datos['accion'])->unique()->values()->all()
+        );
     }
 
     public function test_cerrar_servicio_desde_celular_no_invalida_el_jwt_principal(): void

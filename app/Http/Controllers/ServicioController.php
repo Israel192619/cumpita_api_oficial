@@ -11,6 +11,7 @@ use App\Models\Orden;
 use App\Models\OrdenDetalle;
 use App\Models\OrdenDetalleEstacion;
 use App\Services\KdsEstacionService;
+use App\Services\ServicioAsignacionAutomaticaService;
 use App\Services\ServicioColaboracionService;
 use App\Services\PreordenActivationService;
 use Illuminate\Http\Request;
@@ -35,6 +36,12 @@ class ServicioController extends Controller
         $esMesero = $this->esMesero($usuario);
         if ($this->esSesionServicio()) {
             $this->asegurarMesero($usuario);
+        }
+        if ($esMesero) {
+            $this->notificarAsignaciones(
+                app(ServicioAsignacionAutomaticaService::class)
+                    ->registrarYAsignar($usuario, $this->sessionIdActual($usuario))
+            );
         }
         $base = Orden::with([
             'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
@@ -320,8 +327,24 @@ class ServicioController extends Controller
             $orden->update(['mesero_id' => null, 'tomada_en' => null]);
             return $orden;
         });
+        $asignacion = app(ServicioAsignacionAutomaticaService::class);
+        $asignacion->pausarMesero($mesero->id);
         $this->notificar($orden, 'liberada');
+        $this->notificarAsignaciones($asignacion->reasignarDisponibles());
         return response()->json(['message' => 'Ficha liberada.', 'orden_id' => $orden->id]);
+    }
+
+    public function actividad()
+    {
+        $mesero = $this->meseroServicio();
+        $asignadas = app(ServicioAsignacionAutomaticaService::class)
+            ->registrarYAsignar($mesero, $this->sessionIdActual($mesero));
+        $this->notificarAsignaciones($asignadas);
+
+        return response()->json([
+            'active' => true,
+            'asignadas' => $asignadas->pluck('id')->values(),
+        ]);
     }
 
     public function cerrarSesion(Request $request)
@@ -352,6 +375,8 @@ class ServicioController extends Controller
         }
 
         $sessionId = (string) ($payload->get('session_id') ?: 'principal-'.$mesero->id);
+        $asignacion = app(ServicioAsignacionAutomaticaService::class);
+        $asignacion->desactivarSesion($sessionId);
         // Una sesión creada por PIN tiene su propio JWT y debe invalidarse.
         // El JWT principal del celular identifica al usuario en todo el sistema:
         // cerrar Servicio no debe cerrar esa autenticación general.
@@ -364,6 +389,7 @@ class ServicioController extends Controller
             Log::warning('No se pudo notificar el cierre de Servicio.', ['user_id' => $mesero->id, 'error' => $e->getMessage()]);
         }
         foreach ($ordenes as $orden) $this->notificar($orden, 'liberada');
+        $this->notificarAsignaciones($asignacion->reasignarDisponibles());
 
         return response()->json(['message' => 'Sesión cerrada y fichas liberadas.']);
     }
@@ -395,6 +421,10 @@ class ServicioController extends Controller
             $orden->update(['estado' => 'entregado', 'entregada_en' => now()]);
             return $orden;
         });
+        $this->notificarAsignaciones(
+            app(ServicioAsignacionAutomaticaService::class)
+                ->registrarYAsignar($mesero, $this->sessionIdActual($mesero))
+        );
         // La entrega ya quedó confirmada: responder antes de contactar Reverb.
         app()->terminating(fn () => $this->notificar($orden, 'entregada'));
         return response()->json(['message' => 'Pedido entregado.', 'orden_id' => $orden->id]);
@@ -645,6 +675,20 @@ class ServicioController extends Controller
         } catch (\Throwable) {
             return false;
         }
+    }
+
+    private function sessionIdActual($user): string
+    {
+        try {
+            return (string) (JWTAuth::getPayload()->get('session_id') ?: 'principal-'.$user->id);
+        } catch (\Throwable) {
+            return 'principal-'.$user->id;
+        }
+    }
+
+    private function notificarAsignaciones($ordenes): void
+    {
+        foreach ($ordenes as $orden) $this->notificar($orden, 'tomada');
     }
 
     private function notificarTrasRespuesta(Orden $orden, string $accion): void

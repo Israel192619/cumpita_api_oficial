@@ -154,6 +154,7 @@ Route::middleware('jwt')->group(function () {
         Route::post('servicio/ordenes/{orden}/adicionales', [OrdenAdicionalController::class, 'store']);
         Route::post('servicio/preordenes/{orden}/activar', [OrdenController::class, 'activarPreorden']);
         Route::get('servicio/fichas', [ServicioController::class, 'index']);
+        Route::post('servicio/sesion/actividad', [ServicioController::class, 'actividad']);
         Route::post('servicio/sesion/cerrar', [ServicioController::class, 'cerrarSesion']);
         Route::post('servicio/fichas/{orden}/tomar', [ServicioController::class, 'tomar']);
         Route::post('servicio/fichas/{orden}/apoyar', [ServicioController::class, 'apoyar']);
