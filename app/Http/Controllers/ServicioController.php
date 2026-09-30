@@ -442,11 +442,21 @@ class ServicioController extends Controller
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
             abort_if($orden->detalles->contains(fn ($detalle) => app(ServicioColaboracionService::class)->estado($detalle)['llevando_por_id'] !== null), 409, 'Hay productos en camino. Confirma su entrega antes de cerrar la ficha.');
             abort_unless($incluirCubiertos || $orden->cubiertos_entregados, 422, 'Marca los cubiertos como entregados antes de cerrar la ficha.');
-            $todosListos = $orden->detalles->isNotEmpty() && $orden->detalles->every(fn ($detalle) =>
-                $detalle->estadosEstacion->isNotEmpty()
-                && $detalle->estadosEstacion->every(fn ($estado) => in_array($estado->estado, self::ESTADOS_LISTOS, true))
-            );
-            abort_unless($todosListos, 422, 'Todos los productos deben estar listos antes de entregar.');
+            if ($incluirCubiertos) {
+                // Este atajo es una confirmación operativa del mesero: si Cocina o
+                // Parrilla no alcanzaron a marcar, conserva sus estados anteriores
+                // en el historial y los completa junto con la entrega.
+                foreach ($orden->detalles as $detalle) {
+                    app(KdsEstacionService::class)->sincronizarDetalle($detalle);
+                }
+                $orden->load('detalles.estadosEstacion');
+            } else {
+                $todosListos = $orden->detalles->isNotEmpty() && $orden->detalles->every(fn ($detalle) =>
+                    $detalle->estadosEstacion->isNotEmpty()
+                    && $detalle->estadosEstacion->every(fn ($estado) => in_array($estado->estado, self::ESTADOS_LISTOS, true))
+                );
+                abort_unless($todosListos, 422, 'Todos los productos deben estar listos antes de entregar.');
+            }
             foreach ($orden->detalles as $detalle) {
                 if (!app(ServicioColaboracionService::class)->estado($detalle)['servido']) {
                     $estadoAnterior = $this->estadoAnteriorEntrega($detalle);

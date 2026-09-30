@@ -410,17 +410,7 @@ class ServicioControllerTest extends TestCase
         $this->autenticarServicio($mesero);
         $controller = new ServicioController();
 
-        try {
-            $controller->entregarCompleta($orden);
-            $this->fail('No debe cerrar la ficha mientras Cocina o Parrilla tengan productos pendientes.');
-        } catch (HttpExceptionInterface $e) {
-            $this->assertSame(422, $e->getStatusCode());
-        }
-        $this->assertFalse((bool) $orden->fresh()->cubiertos_entregados);
-        $this->assertSame('preparando', $orden->fresh()->estado);
-
-        $detalle->estadosEstacion()->update(['estado' => 'listo_para_recoger']);
-        $response = $controller->entregarCompleta($orden->fresh());
+        $response = $controller->entregarCompleta($orden);
 
         $this->assertSame(200, $response->status());
         $this->assertTrue((bool) $orden->fresh()->cubiertos_entregados);
@@ -434,6 +424,7 @@ class ServicioControllerTest extends TestCase
             'tipo_cambio' => 'estado_cambiado',
         ]);
         $this->assertSame('entregar', HistorialCambioOrden::latest('id')->firstOrFail()->datos_nuevo['accion']);
+        $this->assertSame('pendiente', HistorialCambioOrden::latest('id')->firstOrFail()->datos_anterior['estado_cocina']);
     }
 
     public function test_desmarcar_servido_restaura_el_estado_previo_de_cada_estacion(): void
