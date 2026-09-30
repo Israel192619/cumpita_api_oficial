@@ -154,6 +154,7 @@ class OrdenController extends Controller
             'usuario_origen_id' => 'nullable|integer|exists:users,id',
             'caja_id' => 'nullable|integer|exists:cajas,id',
             'venta_sin_conexion' => 'nullable|boolean',
+            'pedido_llamada_inmediato' => 'nullable|boolean',
             'pagos' => 'nullable|array|max:10',
             'pagos.*.metodo_pago' => 'required_with:pagos|in:efectivo,qr',
             'pagos.*.monto_aplicado' => 'required_with:pagos|numeric|min:0.01',
@@ -179,7 +180,13 @@ class OrdenController extends Controller
             if ($existente) return $this->respuestaVentaCreada($existente, true);
         }
         if ($this->esMesero()) {
-            abort_unless($request->input('tipo_flujo') === 'preorden', 403, 'El mesero solamente puede registrar preórdenes.');
+            $esPreorden = $request->input('tipo_flujo') === 'preorden';
+            $esPedidoLlamadaInmediato = $request->boolean('pedido_llamada_inmediato')
+                && $request->input('tipo_flujo') === 'normal'
+                && !$request->filled('fecha_programada')
+                && empty($request->input('pagos', []));
+            abort_unless($esPreorden || $esPedidoLlamadaInmediato, 403,
+                'El mesero solamente puede registrar preórdenes o pedidos inmediatos tomados por llamada.');
         }
         if (!$request->cliente_id && !$request->cliente_nombre) {
             return response()->json(['message' => 'El cliente es obligatorio para crear una orden.'], 422);
