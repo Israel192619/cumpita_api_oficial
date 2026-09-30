@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\WebPushSubscription;
+use App\Services\ServicioTrabajoWebPushService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -46,6 +47,10 @@ class WebPushSubscriptionController extends Controller
                 'last_seen_at' => now(),
             ]
         );
+
+        if ($channel === 'SERVICIO' && $subscription->user_id) {
+            app()->terminating(fn () => app(ServicioTrabajoWebPushService::class)->syncForUser((int) $subscription->user_id));
+        }
 
         return response()->json(['active' => true, 'id' => $subscription->id]);
     }

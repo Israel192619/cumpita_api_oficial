@@ -13,6 +13,7 @@ use App\Models\OrdenDetalleEstacion;
 use App\Services\KdsEstacionService;
 use App\Services\ServicioAsignacionAutomaticaService;
 use App\Services\ServicioColaboracionService;
+use App\Services\ServicioTrabajoWebPushService;
 use App\Services\PreordenActivationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -333,6 +334,7 @@ class ServicioController extends Controller
         $asignacion = app(ServicioAsignacionAutomaticaService::class);
         $asignacion->pausarMesero($mesero->id);
         $this->notificar($orden, 'liberada');
+        app()->terminating(fn () => app(ServicioTrabajoWebPushService::class)->syncForUser((int) $mesero->id));
         $this->notificarAsignaciones($asignacion->reasignarDisponibles());
         return response()->json(['message' => 'Ficha liberada.', 'orden_id' => $orden->id]);
     }
@@ -413,6 +415,7 @@ class ServicioController extends Controller
             Log::warning('No se pudo notificar el cierre de Servicio.', ['user_id' => $mesero->id, 'error' => $e->getMessage()]);
         }
         foreach ($ordenes as $orden) $this->notificar($orden, 'liberada');
+        app()->terminating(fn () => app(ServicioTrabajoWebPushService::class)->syncForUser((int) $mesero->id));
         $this->notificarAsignaciones($asignacion->reasignarDisponibles());
 
         return response()->json(['message' => 'Sesión cerrada y fichas liberadas.']);
