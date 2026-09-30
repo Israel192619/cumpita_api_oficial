@@ -561,6 +561,12 @@ class ServicioControllerTest extends TestCase
         $this->assertSame($responsable->id, $orden->fresh()->mesero_id);
         $estado = app(\App\Services\ServicioColaboracionService::class)->estado($detalle->fresh());
         $this->assertSame($ayudante->id, $estado['llevando_por_id']);
+        Event::assertDispatched(ServicioFichaActualizadaEvent::class, fn ($evento) =>
+            $evento->ordenId === $orden->id
+            && $evento->accion === 'colaboracion'
+            && ($evento->ficha['detalles'][0]['llevando_por_id'] ?? null) === $ayudante->id
+            && ($evento->actividad['user_id'] ?? null) === $ayudante->id
+        );
         $this->autenticarServicio($responsable);
         foreach (['llevar', 'entregar'] as $accion) {
             try {

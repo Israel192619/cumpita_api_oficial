@@ -720,29 +720,43 @@ class ServicioController extends Controller
 
     private function notificarTrasRespuesta(Orden $orden, string $accion): void
     {
+        $actorId = auth('api')->id();
+        $actorNombre = auth('api')->user()?->name;
         if (app()->runningUnitTests()) {
-            $this->notificar($orden, $accion);
+            $this->notificar($orden, $accion, $actorId, $actorNombre);
             return;
         }
 
-        app()->terminating(fn () => $this->notificar($orden, $accion));
+        app()->terminating(fn () => $this->notificar($orden, $accion, $actorId, $actorNombre));
     }
 
-    private function notificar(Orden $orden, string $accion = 'actualizada'): void
+    private function notificar(
+        Orden $orden,
+        string $accion = 'actualizada',
+        ?int $actorId = null,
+        ?string $actorNombre = null,
+    ): void
     {
         try {
             $ficha = null;
-            if ($accion === 'liberada') {
+            if (in_array($accion, ['liberada', 'colaboracion'], true)) {
                 $orden->load([
                     'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
-                    'detalles.opciones.modificadorOpcion:id,nombre', 'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
+                    'detalles.opciones.modificadorOpcion:id,nombre,modificador_id', 'detalles.opciones.modificadorOpcion.modificador:id,color_fondo,estacion_id',
+                    'detalles.estadosEstacion', 'detalles.historialCambios.user:id,name',
                     'mesero:id,name',
+                    'pagos:id,id_orden,monto_pagado', 'deliveryCambioPreparadoPor:id,name',
                 ]);
                 $ficha = $this->ficha($orden);
             }
             $evento = ServicioFichaActualizadaEvent::desdeOrden($orden, $accion, $ficha);
             if ($accion === 'colaboracion') {
-                $evento->actividad = ['user_id' => auth('api')->id(), 'mensaje' => auth('api')->user()?->name.' actualizó la entrega de productos de tu ficha #'.$orden->numero_orden.'.'];
+                $actorId ??= auth('api')->id();
+                $actorNombre ??= auth('api')->user()?->name;
+                $evento->actividad = [
+                    'user_id' => $actorId,
+                    'mensaje' => ($actorNombre ?: 'Otro mesero').' ayudó con productos de tu ficha #'.$orden->numero_orden.'.',
+                ];
             }
             event($evento);
             event(new OrdenCocinaActualizadaEvent($orden, [], 'servicio'));
