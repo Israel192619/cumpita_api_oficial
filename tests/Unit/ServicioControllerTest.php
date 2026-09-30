@@ -393,6 +393,49 @@ class ServicioControllerTest extends TestCase
         $this->assertEquals($fechaEntrega, $orden->fresh()->entregada_en);
     }
 
+    public function test_entrega_completa_marca_productos_cubiertos_y_ficha_en_una_sola_operacion(): void
+    {
+        [$mesero] = $this->meseros();
+        $orden = Orden::create([
+            'user_id' => $mesero->id, 'mesero_id' => $mesero->id,
+            'numero_orden' => 130, 'estado' => 'preparando', 'tomada_en' => now(),
+            'cubiertos_entregados' => false,
+        ]);
+        $producto = Producto::create(['nombre' => 'Pollo', 'estacion_id' => 2]);
+        $detalle = OrdenDetalle::create([
+            'orden_id' => $orden->id, 'producto_id' => $producto->id, 'estacion_id' => 2,
+            'cantidad' => 1, 'precio_unitario' => 17, 'estado_cocina' => 'pendiente',
+        ]);
+        app(KdsEstacionService::class)->sincronizarDetalle($detalle->fresh());
+        $this->autenticarServicio($mesero);
+        $controller = new ServicioController();
+
+        try {
+            $controller->entregarCompleta($orden);
+            $this->fail('No debe cerrar la ficha mientras Cocina o Parrilla tengan productos pendientes.');
+        } catch (HttpExceptionInterface $e) {
+            $this->assertSame(422, $e->getStatusCode());
+        }
+        $this->assertFalse((bool) $orden->fresh()->cubiertos_entregados);
+        $this->assertSame('preparando', $orden->fresh()->estado);
+
+        $detalle->estadosEstacion()->update(['estado' => 'listo_para_recoger']);
+        $response = $controller->entregarCompleta($orden->fresh());
+
+        $this->assertSame(200, $response->status());
+        $this->assertTrue((bool) $orden->fresh()->cubiertos_entregados);
+        $this->assertSame('entregado', $orden->fresh()->estado);
+        $this->assertNotNull($orden->fresh()->entregada_en);
+        $this->assertSame('servido', $detalle->fresh()->estado_cocina);
+        $this->assertTrue($detalle->fresh()->estadosEstacion->every(fn ($estado) => $estado->estado === 'servido'));
+        $this->assertDatabaseHas('historial_cambios_orden', [
+            'orden_detalle_id' => $detalle->id,
+            'user_id' => $mesero->id,
+            'tipo_cambio' => 'estado_cambiado',
+        ]);
+        $this->assertSame('entregar', HistorialCambioOrden::latest('id')->firstOrFail()->datos_nuevo['accion']);
+    }
+
     public function test_desmarcar_servido_restaura_el_estado_previo_de_cada_estacion(): void
     {
         [$mesero] = $this->meseros();

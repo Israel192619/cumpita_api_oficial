@@ -164,6 +164,7 @@ Route::middleware('jwt')->group(function () {
         Route::patch('servicio/detalles/{detalle}/confirmar', [ServicioController::class, 'confirmarDetalle']);
         Route::patch('servicio/detalles/{detalle}/desconfirmar', [ServicioController::class, 'desconfirmarDetalle']);
         Route::post('servicio/fichas/{orden}/entregar', [ServicioController::class, 'entregar']);
+        Route::post('servicio/fichas/{orden}/entregar-completa', [ServicioController::class, 'entregarCompleta']);
         Route::patch('servicio/fichas/{orden}/cubiertos', [ServicioController::class, 'actualizarCubiertos']);
         Route::post('servicio/clientes/{cliente}/ubicacion', [ServicioController::class, 'actualizarUbicacionCliente']);
     });

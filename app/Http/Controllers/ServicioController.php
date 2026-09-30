@@ -423,15 +423,25 @@ class ServicioController extends Controller
 
     public function entregar(Orden $orden)
     {
+        return $this->completarEntrega($orden, false);
+    }
+
+    public function entregarCompleta(Orden $orden)
+    {
+        return $this->completarEntrega($orden, true);
+    }
+
+    private function completarEntrega(Orden $orden, bool $incluirCubiertos)
+    {
         $mesero = $this->meseroServicio();
-        $orden = DB::transaction(function () use ($orden, $mesero) {
+        $orden = DB::transaction(function () use ($orden, $mesero, $incluirCubiertos) {
             $orden = Orden::with('detalles.estadosEstacion')->lockForUpdate()->findOrFail($orden->id);
             $this->asegurarOrdenOperativa($orden);
             abort_unless($orden->mesero_id === $mesero->id, 403, 'Esta ficha no está asignada al usuario.');
             if ($orden->estado === 'entregado') return $orden;
             abort_if(in_array($orden->estado, ['entregado', 'cancelado'], true), 422, 'La ficha ya está cerrada.');
             abort_if($orden->detalles->contains(fn ($detalle) => app(ServicioColaboracionService::class)->estado($detalle)['llevando_por_id'] !== null), 409, 'Hay productos en camino. Confirma su entrega antes de cerrar la ficha.');
-            abort_unless($orden->cubiertos_entregados, 422, 'Marca los cubiertos como entregados antes de cerrar la ficha.');
+            abort_unless($incluirCubiertos || $orden->cubiertos_entregados, 422, 'Marca los cubiertos como entregados antes de cerrar la ficha.');
             $todosListos = $orden->detalles->isNotEmpty() && $orden->detalles->every(fn ($detalle) =>
                 $detalle->estadosEstacion->isNotEmpty()
                 && $detalle->estadosEstacion->every(fn ($estado) => in_array($estado->estado, self::ESTADOS_LISTOS, true))
@@ -445,7 +455,11 @@ class ServicioController extends Controller
                     app(ServicioColaboracionService::class)->registrar($detalle, $mesero->id, 'entregar', $estadoAnterior);
                 }
             }
-            $orden->update(['estado' => 'entregado', 'entregada_en' => now()]);
+            $orden->update([
+                'estado' => 'entregado',
+                'entregada_en' => now(),
+                'cubiertos_entregados' => $incluirCubiertos ? true : $orden->cubiertos_entregados,
+            ]);
             return $orden;
         });
         $this->notificarAsignaciones(
@@ -454,7 +468,11 @@ class ServicioController extends Controller
         );
         // La entrega ya quedó confirmada: responder antes de contactar Reverb.
         app()->terminating(fn () => $this->notificar($orden, 'entregada'));
-        return response()->json(['message' => 'Pedido entregado.', 'orden_id' => $orden->id]);
+        return response()->json([
+            'message' => $incluirCubiertos ? 'Productos, cubiertos y pedido entregados.' : 'Pedido entregado.',
+            'orden_id' => $orden->id,
+            'cubiertos_entregados' => (bool) $orden->cubiertos_entregados,
+        ]);
     }
 
     public function actualizarMesa(Request $request, Orden $orden)
@@ -739,7 +757,7 @@ class ServicioController extends Controller
     {
         try {
             $ficha = null;
-            if (in_array($accion, ['liberada', 'colaboracion'], true)) {
+            if (in_array($accion, ['liberada', 'colaboracion', 'cubiertos'], true)) {
                 $orden->load([
                     'mesa:id,numero', 'cliente', 'detalles.producto:id,nombre,categoria_id', 'detalles.producto.categoria:id,nombre,parent_id', 'detalles.producto.categoria.parent:id,nombre',
                     'detalles.opciones.modificadorOpcion:id,nombre,modificador_id', 'detalles.opciones.modificadorOpcion.modificador:id,color_fondo,estacion_id',
